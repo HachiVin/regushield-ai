@@ -1,0 +1,17 @@
+[
+  {
+    "question": "Apa nama saluran atau sistem whistleblowing yang disediakan oleh Bank Mandiri untuk melaporkan dugaan pelanggaran Kode Etik?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Sistem whistleblowing yang disediakan oleh Bank Mandiri dikenal dengan nama Letter to CEO (WBS-LTC)."
+  },
+  {
+    "question": "Bagaimana klasifikasi atau kategori sanksi bagi pegawai yang terbukti melakukan pelanggaran Kode Etik?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Sanksi pelanggaran Kode Etik diklasifikasikan ke dalam tiga kategori, yaitu sanksi Ringan, Sedang, dan Berat."
+  },
+  {
+    "question": "Siapa saja pihak yang diperbolehkan untuk menyampaikan laporan dugaan pelanggaran melalui sistem whistleblowing tersebut?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Seluruh pihak, baik dari internal (Jajaran Bank) maupun pihak eksternal, diperbolehkan untuk menyampaikan laporan."
+  }
+]
