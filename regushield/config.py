@@ -47,10 +47,11 @@ class Settings:
     min_relevance: float = 0.10  # rerank score below this for every chunk -> "not found"
     # Relevance gate (see RAGEngine.relevance_gate): the LLM is skipped when the best chunk holds
     # less than this share of the question's words (weighted by rarity) and no chunk is
-    # min_similarity close in meaning. Measured on the Bank Mandiri code of conduct: answerable
-    # questions scored 0.27-1.00, off-topic ones 0.00-0.60, so 0.20 only stops the clearly
-    # unrelated ones and leaves the rest to the LLM, which refuses when the answer is missing.
-    min_term_coverage: float = 0.20
+    # min_similarity close in meaning. Measured on the Bank Mandiri code of conduct: off-topic
+    # questions scored 0.00-0.60, and an answerable one ("karyawan ... hadiah dari vendor", the
+    # rule says "gratifikasi") only 0.18. So 0.10 stops only questions sharing almost no words
+    # with the documents; the LLM, which refuses when the answer is missing, judges the rest.
+    min_term_coverage: float = 0.10
     min_similarity: float = 0.60
     ocr_enabled: bool = True  # read text inside images (needs rapidocr-onnxruntime)
     ocr_max_images: int = 50  # per document; OCR is the slowest part of ingestion

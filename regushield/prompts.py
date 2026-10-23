@@ -26,7 +26,8 @@ Aturan:
 5. Kutipan bisa dimulai di tengah paragraf lain. Jangan menggabungkan kalimat dari dua
    pengertian yang berbeda menjadi satu definisi.
 6. Jika kutipan menjawab sebagian pertanyaan, jawab bagian itu, lalu tutup dengan satu kalimat
-   yang menyebut bagian mana yang tidak dijelaskan dalam dokumen.
+   yang menyebut bagian mana yang tidak dijelaskan dalam dokumen. Jika semuanya terjawab,
+   jangan menulis kalimat penutup seperti itu.
 7. Hanya jika kutipan sama sekali tidak memuat informasi yang relevan, jawab persis:
    "{NOT_FOUND}" tanpa tambahan apa pun. Jangan pernah menulis kalimat itu di dalam jawaban
    yang berisi informasi lain.

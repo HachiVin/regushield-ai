@@ -11,5 +11,5 @@ fastapi==0.161.1
 uvicorn==0.54.0
 python-multipart==0.0.32
 python-dotenv==1.2.4
-# OCR for text inside images (tables pasted as pictures, scanned pages). Needs libGL on Linux.
+# OCR for text inside images (tables pasted as pictures, scanned pages). Needs libGL and libglib on Linux.
 rapidocr-onnxruntime==1.4.4

@@ -99,14 +99,20 @@ def _to_bgr_on_white(image, np):
     return image
 
 
-def available() -> bool:
-    """True when the OCR dependencies are installed."""
+def unavailable_reason() -> str | None:
+    """Why OCR cannot run here (None when it can): a missing package, or OpenCV missing a
+    system library such as libGL or libglib, which a plain import error would hide."""
     try:
         import cv2  # noqa: F401
         import rapidocr_onnxruntime  # noqa: F401
-    except Exception:  # ImportError, or OpenCV missing a system library such as libGL
-        return False
-    return True
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def available() -> bool:
+    """True when the OCR dependencies are installed and importable."""
+    return unavailable_reason() is None
 
 
 def lines_to_text(lines: list[OcrLine]) -> str:

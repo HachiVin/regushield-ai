@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from regushield import ocr
 from regushield.engine import IngestError
 from views import common
 
@@ -68,9 +69,9 @@ def main() -> None:
             "OCR ditandai di sumber jawaban karena bisa salah baca."
         )
     elif engine.settings.ocr_enabled:
+        reason = ocr.unavailable_reason() or "engine OCR tidak dibuat"
         ocr_note = (
-            "OCR tidak tersedia (paket rapidocr-onnxruntime belum terpasang), jadi teks di dalam "
-            "gambar tidak terbaca."
+            f"OCR tidak tersedia, jadi teks di dalam gambar tidak terbaca. Penyebab: `{reason}`"
         )
     else:
         ocr_note = "OCR dimatikan (REGUSHIELD_OCR=false): teks di dalam gambar tidak terbaca."

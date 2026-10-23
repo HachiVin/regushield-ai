@@ -173,3 +173,9 @@ def test_monitoring_shows_the_gate_rate(engine):
     app = run("views/monitoring.py")
     metrics = {m.label: m.value for m in app.metric}
     assert metrics["Ditolak gerbang"] == "100%"
+
+
+def test_documents_page_explains_why_ocr_is_off(engine, monkeypatch):
+    monkeypatch.setattr("regushield.ocr.unavailable_reason", lambda: "ImportError: libglib missing")
+    app = run("views/documents.py")
+    assert any("libglib missing" in c for c in texts(app.caption))

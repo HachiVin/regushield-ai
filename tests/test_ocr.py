@@ -105,3 +105,18 @@ def test_transparent_pixels_become_white_not_black():
     assert (ocr._to_bgr_on_white(rgba, np) == 255).all()
     grey = np.full((2, 2), 7, dtype=np.uint8)
     assert ocr._to_bgr_on_white(grey, np).shape == (2, 2, 3)
+
+
+def test_the_reason_ocr_is_unavailable_is_reported(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "cv2":
+            raise ImportError("libgthread-2.0.so.0: cannot open shared object file")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert "libgthread-2.0.so.0" in ocr.unavailable_reason()
+    assert not ocr.available()
