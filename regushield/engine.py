@@ -75,6 +75,7 @@ class Answer:
     model: str | None = None
     error: str | None = None
     gate: dict[str, Any] = field(default_factory=dict)  # why the LLM was or was not called
+    trace: list[dict] = field(default_factory=list)  # candidate ranks per stage (audit export)
 
     @property
     def cited(self) -> bool:
@@ -116,6 +117,7 @@ class AnswerStream:
         retrieval = engine.retriever.retrieve(answer.question, answer.scope)
         answer.latency_ms.update(retrieval.timings_ms)
         answer.sources = _sources(retrieval)
+        answer.trace = retrieval.trace
         passed, reason = engine.relevance_gate(retrieval)
         answer.gate = {
             "passed": passed,

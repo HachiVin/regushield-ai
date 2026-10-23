@@ -127,6 +127,7 @@ class Retrieved:
     vector_rank: int | None
     rerank_score: float | None = None
     vector_score: float | None = None  # cosine similarity to the question
+    rerank_rank: int | None = None
     continues: str | None = None  # id of the hit this chunk was added after (context expansion)
     precedes: str | None = None  # id of the hit this chunk was added before (context expansion)
 
@@ -143,6 +144,7 @@ class RetrievalResult:
     term_coverage: float | None = None  # see HybridRetriever.term_coverage
     matched_terms: list[str] = field(default_factory=list)
     missing_terms: list[str] = field(default_factory=list)
+    trace: list[dict] = field(default_factory=list)  # every candidate's ranks, for audits
 
     @property
     def top_similarity(self) -> float | None:
@@ -262,14 +264,18 @@ class HybridRetriever:
 
         if self.reranker is not None and pool:
             # The cross-encoder is the slowest stage on CPU, so it only rereads the best fused
-            # candidates; the rest keep their fusion order behind them.
-            pool = pool[: self.rerank_candidates]
+            # candidates. The top hits of each retriever always get in: a chunk only one of them
+            # finds (a table pasted as an image: BM25 matches its words, the vector does not)
+            # would otherwise lose to chunks both list lower, and never be reread at all.
+            pool = _rerank_pool(pool, list(bm25_rank), list(vector_rank), self.rerank_candidates)
             started = time.perf_counter()
             scores = self.reranker.score(query, [hit.chunk.text for hit in pool])
             timings["rerank"] = (time.perf_counter() - started) * 1000
             for hit, score in zip(pool, scores, strict=True):
                 hit.rerank_score = score
             by_rerank = sorted(pool, key=lambda hit: hit.rerank_score or 0.0, reverse=True)
+            for rank, hit in enumerate(by_rerank, start=1):
+                hit.rerank_rank = rank
             if self.fuse_rerank:
                 rankings = [
                     list(bm25_rank),
@@ -292,15 +298,16 @@ class HybridRetriever:
             term_coverage=coverage,
             matched_terms=matched,
             missing_terms=missing,
+            trace=_trace(pool, self.top_k, by_id, bm25_rank, vector_rank),
         )
 
     def term_coverage(
         self, query: str, hits: list[Retrieved]
     ) -> tuple[float | None, list[str], list[str]]:
         """Share of the question's words (weighted by rarity) found together in one retrieved
-        chunk, the best chunk counting. A word also matches inside a longer one ("lapor" in
-        "melaporkan"). Returns (coverage, matched words, missing words); coverage is None for a
-        question made only of stopwords.
+        chunk, the best chunk counting. A word also matches with Indonesian affixes ("lapor" in
+        "melaporkan"), not just anywhere inside another word. Returns (coverage, matched words,
+        missing words); coverage is None for a question made only of stopwords.
         """
         terms = list(dict.fromkeys(tokenize(query)))
         if not terms or not hits:
@@ -318,5 +325,65 @@ class HybridRetriever:
         return coverage, [t for t in terms if t in best], [t for t in terms if t not in best]
 
 
+# Indonesian affixes: "lapor" should match "melaporkan" and "pelaporan", but "enak" must not
+# match "dikenakan" (di-k-enak-an), which a plain substring test did, letting "resep nasi goreng
+# yang enak" through the relevance gate.
+_PREFIXES = "me|mem|men|meng|meny|di|ber|be|ter|te|pe|pem|pen|peng|peny|per|ke|se"
+_SUFFIXES = "kan|an|i|nya|lah|kah|pun|kannya|annya|inya"
+
+
+def _affixed(term: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:{_PREFIXES})?{re.escape(term)}(?:{_SUFFIXES})?")
+
+
+def _rerank_pool(
+    pool: list[Retrieved], bm25_ids: list[str], vector_ids: list[str], size: int, each: int = 3
+) -> list[Retrieved]:
+    """The ``size`` candidates the reranker reads: the top ``each`` of BM25 and of the vector
+    search first, then the rest in fused order."""
+    by_id = {hit.chunk.id: hit for hit in pool}
+    first = [i for i in dict.fromkeys(bm25_ids[:each] + vector_ids[:each]) if i in by_id]
+    rest = [hit for hit in pool if hit.chunk.id not in set(first)]
+    return ([by_id[i] for i in first] + rest)[:size]
+
+
+def _trace(
+    pool: list[Retrieved],
+    top_k: int,
+    by_id: dict[str, Chunk],
+    bm25_rank: dict[str, int],
+    vector_rank: dict[str, int],
+    limit: int = 10,
+) -> list[dict]:
+    """Where each candidate ranked in every stage: the final order, then the best BM25 and
+    vector hits that did not reach the reranker. Answers "why was this chunk not used?"."""
+
+    def row(chunk: Chunk, final: int | None, hit: Retrieved | None) -> dict:
+        return {
+            "page": chunk.page,
+            "kind": chunk.kind,
+            "final_rank": final,
+            "used": final is not None and final <= top_k,
+            "bm25_rank": bm25_rank.get(chunk.id),
+            "vector_rank": vector_rank.get(chunk.id),
+            "rerank_rank": hit.rerank_rank if hit else None,
+            "rerank_score": round(hit.rerank_score, 4) if hit and hit.rerank_score else None,
+            "preview": " ".join(chunk.text.split())[:90],
+        }
+
+    rows = [row(hit.chunk, n, hit) for n, hit in enumerate(pool[:limit], start=1)]
+    in_pool = {hit.chunk.id for hit in pool[:limit]}
+    best = sorted(
+        (i for i in set(bm25_rank) | set(vector_rank) if i not in in_pool),
+        key=lambda i: min(bm25_rank.get(i, 999), vector_rank.get(i, 999)),
+    )[:5]
+    return rows + [row(by_id[i], None, None) for i in best]
+
+
 def _contains(words: set[str], term: str) -> bool:
-    return term in words or (len(term) >= 4 and any(term in word for word in words))
+    if term in words:
+        return True
+    if len(term) < 4:
+        return False
+    pattern = _affixed(term)
+    return any(pattern.fullmatch(word) for word in words if term in word)

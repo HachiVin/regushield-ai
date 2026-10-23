@@ -329,3 +329,47 @@ def test_term_coverage_counts_rare_words_more_and_matches_inside_longer_words():
 def test_term_coverage_is_none_for_a_question_of_stopwords():
     retriever = HybridRetriever(store_with(CHUNKS), None, 10, 4)
     assert retriever.term_coverage("apa yang dan", as_hits(CHUNKS))[0] is None
+
+
+@pytest.mark.parametrize(
+    ("word", "term", "match"),
+    [
+        ("melaporkan", "lapor", True),
+        ("pelaporan", "lapor", True),
+        ("bingkisan", "bingkisan", True),
+        ("dikenakan", "enak", False),  # di-k-enak-an: not an affix of "enak"
+        ("informasi", "masi", False),
+        ("kepadanasabah", "nasabah", False),  # OCR merged two words: no false match either
+    ],
+)
+def test_words_match_with_indonesian_affixes_only(word, term, match):
+    from regushield.retrieval import _contains
+
+    assert _contains({word}, term) is match
+
+
+def test_an_off_topic_question_sharing_only_a_hidden_substring_is_not_covered():
+    docs = [chunk(i, f"Pelanggaran yang terbukti dikenakan sanksi nomor {i}.") for i in range(5)]
+    retriever = HybridRetriever(store_with(docs), None, 10, 5)
+    coverage, matched, _ = retriever.term_coverage("Resep nasi goreng yang enak?", as_hits(docs))
+    assert coverage == 0.0 and matched == []
+
+
+def test_the_top_hits_of_each_retriever_always_reach_the_reranker():
+    from regushield.retrieval import _rerank_pool
+
+    hits = {i: Retrieved(chunk(i, f"teks {i}"), 0.0, None, None) for i in range(6)}
+    fused_order = [hits[i] for i in (1, 2, 3, 4, 5, 0)]  # c0: BM25 #1 only, fused last
+    pool = _rerank_pool(fused_order, ["c0", "c1"], ["c2", "c1"], size=3, each=1)
+    assert [h.chunk.id for h in pool] == ["c0", "c2", "c1"]
+
+
+def test_trace_shows_each_candidates_rank_per_stage():
+    result = HybridRetriever(store_with(CHUNKS), OverlapReranker(), 10, 2).retrieve(
+        "sanksi berat pemutusan hubungan kerja"
+    )
+    first = result.trace[0]
+    assert first["final_rank"] == 1 and first["used"] and first["page"] == 4
+    assert first["bm25_rank"] == 1 and first["rerank_rank"] == 1
+    assert first["preview"].startswith("Sanksi berat")
+    assert [row["used"] for row in result.trace].count(True) == 2

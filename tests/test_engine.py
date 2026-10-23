@@ -323,3 +323,9 @@ def test_turning_ocr_on_reindexes_a_document_uploaded_without_it(make_engine, se
     report = eng.ingest("sanksi.pdf", pdf)
     assert report.status == "replaced" and report.ocr_images == 1
     assert eng.ingest("sanksi.pdf", pdf).status == "unchanged"
+
+
+def test_answer_carries_the_retrieval_trace_for_the_audit_export(engine):
+    answer = engine.ask_sync("Bolehkah pegawai menerima hadiah dari nasabah?")
+    assert answer.trace and answer.to_dict()["trace"][0]["final_rank"] == 1
+    assert "trace" not in engine.log.read()[0]  # the query log stays small

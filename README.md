@@ -51,6 +51,9 @@ three safeguards:
   indexing.
 - **Document management.** Upload several PDFs, re-upload a new version (the old one is
   replaced), skip unchanged files, reject duplicates, delete documents.
+- **Retrieval trace in the audit export.** Each answer in the downloaded audit log lists the
+  candidates with their BM25, vector, reranker and final ranks, including good BM25/vector hits
+  that never reached the reranker, so "why was this passage not used?" has an answer.
 - **Monitoring.** Every question is logged with latency per stage, time to first token,
   tokens, estimated cost, top relevance, whether sources were cited, errors and 👍/👎
   feedback. The Monitoring page and the `/metrics` endpoint show p50/p95 latency, cost per
@@ -99,6 +102,7 @@ flowchart LR
 |---|---|---|
 | BM25 + vector search, merged with RRF | Legal text mixes exact identifiers with paraphrased concepts; each method misses what the other finds. RRF merges ranks without calibrating two score scales. | Two indexes to keep in sync. BM25 is rebuilt in memory from the vector store on start-up. |
 | Cross-encoder reranker on the top 10 fused candidates | Reads question and passage together, which is more accurate than comparing embeddings. | The slowest stage on CPU. Rescoring 20 candidates at 512 tokens was the bottleneck in local tests, so the default is 10 candidates at 256 tokens; the Monitoring page shows the effect. |
+| The top 3 of BM25 and of vector search always reach the reranker | Only 10 candidates are reranked (CPU cost). Picked by fused rank alone, a chunk that only one retriever finds, such as a table read by OCR that BM25 ranks first but the vector search does not list, lost to chunks both retrievers rank lower and was never reread. | Up to 6 of the 10 slots are reserved, so fewer chunks enter on fused rank alone. |
 | Final order = RRF(BM25, vector, reranker) | Audit of 53 retrieved passages: every reranker score was between 0.995 and 0.9996, so its order among good candidates was close to noise. In one case it pushed the passage BM25 ranked first out of the top 4 and the answer became "not found". With fusion a passage two rankings agree on stays on top. | The reranker can no longer overrule both retrievers. `REGUSHIELD_FUSE_RERANK=false` restores reranker-only ordering, e.g. for a stronger reranker. |
 | Relevance gate by term coverage, not reranker score | The reranker gave an off-topic question ("suku bunga KPR") ~0.999 too, so a score threshold let everything through. Measured on the Bank Mandiri code of conduct: off-topic questions had 0.00–0.60 of their (rarity-weighted) words in one passage ("harga saham" matches the insider-trading text), and in a live audit an answerable question ("karyawan ... hadiah dari vendor", where the document says "gratifikasi") had only 0.18. | The ranges overlap, so no threshold separates them. A first default of 0.20 refused that answerable question, so the default is 0.10: it stops only questions that share almost nothing with the documents ("resep nasi goreng"); the rest go to the LLM, which refuses when the passages do not answer, at the cost of one LLM call. |
 | OCR with RapidOCR (ONNX), images upscaled 2× | In the test document the sanctions table, the violation counts and the gift rules were images: without OCR, about half of the content could not be answered. The model ships in the wheel and runs on CPU, so it stays free and offline. Reading the image's own pixels and upscaling them with a cubic filter removed most misread letters seen when rendering the page area. | Slower ingestion (about 40 s for the 9 images of the test document on the test machine's CPU). The recognizer is trained on Chinese/English text, so Indonesian words are sometimes merged ("kepadanasabah"); OCR passages are labelled so users can check them. Needs `libgl1` and `libglib2.0-0` on Linux (`packages.txt`, Dockerfile). |
@@ -278,7 +282,12 @@ Streamlit pages end to end.
 - The reranker's scores saturate near 1.00 on Indonesian text, so the relevance shown per
   source says little; ranking relies on fusion and the gate on term coverage.
 - The relevance gate is lexical: an off-topic question that shares words with the document
-  ("harga saham") still reaches the LLM, which then has to refuse.
+  ("harga saham") still reaches the LLM, which then has to refuse. Words match with Indonesian
+  affixes only ("lapor" ~ "melaporkan"); an early version matched any substring, so "enak"
+  matched "dikenakan" and "resep nasi goreng yang enak" passed the gate.
+- In OCR text, a label column beside the body text (as on the code-of-conduct pages) is
+  joined into the body lines ("... Hari Raya Keagamaan Gratifikasi | dari nasabah ..."), which
+  can blur a sentence.
 - Questions phrased with different words than the document ("wajib mematuhi" vs "berlaku
   untuk") depend on the vector model and can still miss.
 - Documents indexed with other settings (older versions, chunk size, OCR off) are listed on
