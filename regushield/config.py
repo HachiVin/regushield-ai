@@ -39,6 +39,7 @@ class Settings:
     chunk_overlap: int = 120
     candidates: int = 20  # taken from each retriever (BM25 and vector) before fusion
     top_k: int = 4  # chunks sent to the LLM
+    context_window: int = 1  # chunks added after a hit that stops mid-sentence (0 = off)
     min_relevance: float = 0.10  # rerank score below this for every chunk -> "not found"
     max_file_mb: int = 25
     api_key: str | None = None  # protects the REST API when set
@@ -112,6 +113,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         chunk_overlap=_int(env, "REGUSHIELD_CHUNK_OVERLAP", d.chunk_overlap),
         candidates=_int(env, "REGUSHIELD_CANDIDATES", d.candidates),
         top_k=_int(env, "REGUSHIELD_TOP_K", d.top_k),
+        context_window=_int(env, "REGUSHIELD_CONTEXT_WINDOW", d.context_window),
         min_relevance=_float(env, "REGUSHIELD_MIN_RELEVANCE", d.min_relevance) or 0.0,
         max_file_mb=_int(env, "REGUSHIELD_MAX_FILE_MB", d.max_file_mb),
         api_key=_get(env, "REGUSHIELD_API_KEY"),

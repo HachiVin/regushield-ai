@@ -23,10 +23,13 @@ Aturan:
 
 
 def format_context(hits: list[Retrieved]) -> str:
+    numbers = {hit.chunk.id: n for n, hit in enumerate(hits, start=1)}
     parts = []
     for n, hit in enumerate(hits, start=1):
         c = hit.chunk
         label = "tabel, " if c.kind == "table" else ""
+        if hit.continues in numbers:
+            label = f"lanjutan dari [{numbers[hit.continues]}], " + label
         parts.append(f"[{n}] ({label}{c.source}, halaman {c.page})\n{c.text}")
     return "\n\n".join(parts)
 

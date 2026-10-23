@@ -94,6 +94,16 @@ def test_chunks_never_cross_pages_and_carry_page_numbers():
     assert [c.kind for c in chunks if c.page == 2] == ["text", "table"]
 
 
+def test_chunks_record_their_reading_order():
+    pages = [
+        PageContent(1, "A " * 300, tables=["|a|b|\n|---|---|\n|1|2|"]),
+        PageContent(2, "B " * 10),
+    ]
+    chunks = chunk_pages(pages, "doc.pdf", 200, 20)
+    assert [c.seq for c in chunks] == list(range(len(chunks)))
+    assert [c.kind for c in chunks][-2:] == ["table", "text"]
+
+
 def test_chunk_ids_are_stable_and_unique():
     pages = [PageContent(1, "Pasal 1. Isi."), PageContent(2, "Pasal 1. Isi.")]
     first = chunk_pages(pages, "doc.pdf", 100, 0)

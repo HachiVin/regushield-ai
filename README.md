@@ -27,6 +27,10 @@ three safeguards:
   rankings are merged with Reciprocal Rank Fusion.
 - **Cross-encoder reranking.** A multilingual reranker (FlashRank, ONNX) rescores the merged
   candidates against the question. Its score is the relevance shown next to each source.
+- **Context expansion.** When a retrieved passage stops mid-sentence or mid-list ("...three
+  categories: Light,"), the next passage of the same document is added after it and labelled
+  as its continuation. The rest of a list rarely shares words with the question, so it would
+  never be retrieved on its own.
 - **Relevance gate.** If no passage reaches the minimum relevance, the LLM is never called.
   That costs nothing and leaves no chance to hallucinate.
 - **Cited, streamed answers.** Groq (`openai/gpt-oss-20b`) streams the answer with `[n]`
@@ -64,7 +68,8 @@ flowchart LR
         RRF --> RR[Cross-encoder rerank]
         RR --> Gate{relevance ≥ threshold?}
         Gate -- no --> NF[Not found<br/>no LLM call]
-        Gate -- yes --> LLM[Groq LLM<br/>streamed, cited]
+        Gate -- yes --> Exp[Context expansion<br/>next chunk of cut-off hits]
+        Exp --> LLM[Groq LLM<br/>streamed, cited]
         LLM --> Check[Citation check]
     end
     Chroma -.-> V
@@ -83,7 +88,8 @@ flowchart LR
 | Relevance gate before the LLM | The cheapest way to stop hallucination is not to ask the LLM when there is nothing to ground it. | The threshold (`REGUSHIELD_MIN_RELEVANCE`) has to be tuned with the evaluation set: too high refuses answerable questions. |
 | ONNX models (FastEmbed, FlashRank), no PyTorch | Much smaller install and faster cold start on free hosting; CPU only. | Limited to the models these libraries ship. |
 | `paraphrase-multilingual-MiniLM-L12-v2` embeddings | Small (~0.2 GB) and multilingual; the old English-only MiniLM matched Indonesian text poorly. | Reads only ~128 tokens per chunk. Chunks are kept to ~800 characters, and BM25 and the reranker still see the full text. |
-| Chunks never cross a page | Every chunk cites exactly one page. | A sentence spanning two pages is split. |
+| Chunks never cross a page | Every chunk cites exactly one page. | A sentence spanning two pages is split; context expansion reattaches it. |
+| Context expansion only for cut-off hits | Found in testing: "examples of violations" returned *not found* because the passage ended at "three categories: Light," and the list was in the next chunk. Adding the next chunk only when a hit ends mid-sentence fixes this without sending extra text for complete passages. | Up to one extra passage (~800 characters) per cut-off hit, so more prompt tokens on those questions. The check is a punctuation heuristic; `REGUSHIELD_CONTEXT_WINDOW=0` turns it off. |
 | Groq `gpt-oss-20b`, temperature 0, low reasoning effort | Fast, cheap, deterministic enough for audit use. | Hosted API, so documents' passages leave the machine. |
 | JSON Lines query log | Zero infrastructure; easy to inspect, export or ship to a real monitoring stack. | Not a time-series database; fine for a single instance. |
 
@@ -194,6 +200,7 @@ All settings are environment variables (or `.env`). Only `GROQ_API_KEY` is requi
 | `REGUSHIELD_RERANK_CANDIDATES` / `REGUSHIELD_RERANK_MAX_TOKENS` | `10` / `256` | Passages the reranker rescores, and tokens per pair: the main latency knobs on CPU |
 | `REGUSHIELD_MIN_RELEVANCE` | `0.10` | Relevance gate |
 | `REGUSHIELD_TOP_K` / `REGUSHIELD_CANDIDATES` | `4` / `20` | Passages sent to the LLM / taken from each retriever |
+| `REGUSHIELD_CONTEXT_WINDOW` | `1` | Passages added after a hit that stops mid-sentence (`0` = off) |
 | `REGUSHIELD_CHUNK_SIZE` / `REGUSHIELD_CHUNK_OVERLAP` | `800` / `120` | Characters |
 | `REGUSHIELD_PRICE_INPUT_PER_M` / `..._OUTPUT_PER_M` | list price | USD per 1M tokens, used for the cost estimate |
 | `REGUSHIELD_LOG_QUESTIONS` | `true` | `false` keeps question text out of the log |
@@ -242,6 +249,11 @@ API, the CLI and the Streamlit pages end to end.
 - Scanned PDFs (images without a text layer) are rejected; there is no OCR.
 - Retrieval quality depends on the threshold and chunk size, which should be tuned with a
   larger evaluation set than the one included.
+- The reranker's scores saturate near 1.00 for passages on the same topic, so the relevance
+  shown per source separates on-topic from off-topic text but does not rank on-topic passages
+  finely.
+- Documents indexed before context expansion existed have no chunk order; upload the same file
+  again to re-index it.
 - The cost figure is an estimate from token counts and list prices, which change; check
   Groq's pricing.
 - Passages are sent to Groq's hosted API. Do not upload confidential documents to the public

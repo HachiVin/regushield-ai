@@ -30,6 +30,21 @@ def test_new_version_with_the_same_name_replaces_the_old_one(engine):
     assert not any("gratifikasi" in t for t in texts)
 
 
+def test_document_indexed_without_chunk_order_is_reindexed_on_reupload(engine, kode_etik_pdf):
+    collection = engine.store._collection  # simulate an index written before chunks had "seq"
+    data = collection.get(include=["documents", "metadatas", "embeddings"])
+    collection.delete(ids=data["ids"])
+    metas = [{k: v for k, v in m.items() if k != "seq"} for m in data["metadatas"]]
+    collection.add(
+        ids=data["ids"], documents=data["documents"], embeddings=data["embeddings"], metadatas=metas
+    )
+    assert not engine.documents()[0].ordered
+
+    assert engine.ingest("kode etik.pdf", kode_etik_pdf).status == "replaced"
+    assert engine.documents()[0].ordered
+    assert sorted(c.seq for c in engine.store.all_chunks()) == list(range(engine.store.count()))
+
+
 def test_same_content_under_another_name_is_rejected(engine, kode_etik_pdf):
     with pytest.raises(IngestError, match="sudah terindeks sebagai 'kode etik.pdf'"):
         engine.ingest("salinan.pdf", kode_etik_pdf)
@@ -89,6 +104,27 @@ def test_prompt_contains_numbered_context_with_pages(engine):
         .rstrip()
         .endswith("Pertanyaan: Bolehkah pegawai menerima hadiah dari nasabah?")
     )
+
+
+def test_a_list_cut_at_a_page_break_reaches_the_llm_with_its_continuation(make_engine, settings):
+    eng = make_engine(
+        chat=FakeChat("Tiga kategori: Ringan, Sedang, Berat [1][2]."),
+        settings_override=dataclasses.replace(settings, top_k=1),
+    )
+    eng.ingest(
+        "sanksi.pdf",
+        make_pdf(
+            [
+                "Jenis sanksi pelanggaran kode etik diklasifikasikan ke dalam tiga kategori:",
+                "Ringan, Sedang, dan Berat. Contoh pelanggaran berat adalah menerima suap.",
+            ]
+        ),
+    )
+    answer = eng.ask_sync("Apa saja jenis sanksi pelanggaran kode etik?")
+    assert [(s.page, s.continues) for s in answer.sources] == [(1, None), (2, 1)]
+    assert answer.sources[1].relevance is None and answer.sources[1].cited
+    user = eng.chat.messages[-1][1]["content"]
+    assert "[2] (lanjutan dari [1], sanksi.pdf, halaman 2)\nRingan, Sedang, dan Berat." in user
 
 
 def test_irrelevant_question_is_not_sent_to_the_llm(engine):

@@ -160,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         "reranker_model": settings.reranker_model if settings.rerank_enabled else None,
         "chunk_size": settings.chunk_size,
         "top_k": settings.top_k,
+        "context_window": settings.context_window,
         "min_relevance": settings.min_relevance,
         "documents": [d.source for d in engine.documents()],
     }

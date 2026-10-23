@@ -22,6 +22,18 @@ class DocumentInfo:
     tables: int
     sha256: str
     ingested_at: str
+    ordered: bool = True  # every chunk knows its position (needed for context expansion)
+
+
+def _chunk(id_: str, text: str, meta: dict) -> Chunk:
+    return Chunk(
+        id_,
+        text,
+        meta["source"],
+        int(meta["page"]),
+        meta.get("kind", "text"),
+        int(meta.get("seq", -1)),
+    )
 
 
 class VectorStore:
@@ -53,6 +65,7 @@ class VectorStore:
                         "source": c.source,
                         "page": c.page,
                         "kind": c.kind,
+                        "seq": c.seq,
                         "sha256": sha256,
                         "ingested_at": ingested_at,
                     }
@@ -66,7 +79,7 @@ class VectorStore:
     def all_chunks(self) -> list[Chunk]:
         data = self._collection.get(include=["documents", "metadatas"])
         return [
-            Chunk(id_, text, meta["source"], int(meta["page"]), meta.get("kind", "text"))
+            _chunk(id_, text, meta)
             for id_, text, meta in zip(
                 data["ids"], data["documents"], data["metadatas"], strict=True
             )
@@ -86,6 +99,7 @@ class VectorStore:
                     tables=sum(1 for m in metas if m.get("kind") == "table"),
                     sha256=metas[0].get("sha256", ""),
                     ingested_at=metas[0].get("ingested_at", ""),
+                    ordered=all("seq" in m for m in metas),
                 )
                 for source, metas in grouped.items()
             ),
@@ -110,6 +124,6 @@ class VectorStore:
             result["distances"][0],
             strict=True,
         ):
-            chunk = Chunk(id_, text, meta["source"], int(meta["page"]), meta.get("kind", "text"))
+            chunk = _chunk(id_, text, meta)
             hits.append((chunk, 1.0 - float(distance)))
         return hits

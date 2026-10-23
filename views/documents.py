@@ -88,6 +88,13 @@ def main() -> None:
         hide_index=True,
         width="stretch",
     )
+    legacy = [d.source for d in documents if not d.ordered]
+    if legacy:
+        st.info(
+            f"{', '.join(legacy)} diindeks dengan versi lama, jadi kutipan lanjutan (context "
+            "expansion) belum aktif. Unggah ulang file yang sama untuk mengindeks ulang.",
+            icon=":material/update:",
+        )
 
     with st.popover("Hapus dokumen", icon=":material/delete:"):
         target = st.selectbox("Dokumen", [d.source for d in documents], key="delete_target")

@@ -29,6 +29,9 @@ class SourceOut(BaseModel):
     kind: str
     relevance: float | None
     cited: bool
+    continues: int | None = Field(
+        None, description="Number of the source this chunk continues (context expansion)."
+    )
     text: str
 
 

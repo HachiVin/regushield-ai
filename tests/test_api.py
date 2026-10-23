@@ -27,6 +27,7 @@ def test_query_returns_answer_sources_and_metrics(client):
     body = response.json()
     assert body["status"] == "answered" and body["answer"].endswith("[1].")
     assert body["sources"][0]["page"] == 1 and body["sources"][0]["cited"] is True
+    assert body["sources"][0]["continues"] is None
     assert body["latency_ms"]["total"] > 0 and body["prompt_tokens"] == 120
 
 

@@ -52,6 +52,7 @@ class Source:
     text: str
     relevance: float | None
     cited: bool = False
+    continues: int | None = None  # number of the source this one continues (context expansion)
 
 
 @dataclass
@@ -154,8 +155,17 @@ class AnswerStream:
 
 
 def _sources(retrieval: RetrievalResult) -> list[Source]:
+    numbers = {h.chunk.id: n for n, h in enumerate(retrieval.hits, start=1)}
     return [
-        Source(n, h.chunk.source, h.chunk.page, h.chunk.kind, h.chunk.text, h.rerank_score)
+        Source(
+            n,
+            h.chunk.source,
+            h.chunk.page,
+            h.chunk.kind,
+            h.chunk.text,
+            h.rerank_score,
+            continues=numbers.get(h.continues) if h.continues else None,
+        )
         for n, h in enumerate(retrieval.hits, start=1)
     ]
 
@@ -174,7 +184,12 @@ class RAGEngine:
         self.chat = chat
         self.log = log
         self.retriever = HybridRetriever(
-            store, reranker, settings.candidates, settings.top_k, settings.rerank_candidates
+            store,
+            reranker,
+            settings.candidates,
+            settings.top_k,
+            settings.rerank_candidates,
+            settings.context_window,
         )
         self._lock = threading.Lock()
 
@@ -214,10 +229,13 @@ class RAGEngine:
             raise IngestError(f"Ukuran file melebihi {self.settings.max_file_mb} MB.")
         sha256 = hashlib.sha256(data).hexdigest()
         existing = {d.source: d for d in self.documents()}
-        if source in existing and existing[source].sha256 == sha256:
+        # Same file again: nothing to do, unless it was indexed before chunks stored their order.
+        if source in existing and existing[source].sha256 == sha256 and existing[source].ordered:
             doc = existing[source]
             return IngestReport(source, "unchanged", doc.pages, doc.chunks, doc.tables)
-        duplicate = next((d for d in existing.values() if d.sha256 == sha256), None)
+        duplicate = next(
+            (d for d in existing.values() if d.sha256 == sha256 and d.source != source), None
+        )
         if duplicate is not None:
             raise IngestError(f"Isi file ini sudah terindeks sebagai '{duplicate.source}'.")
         try:

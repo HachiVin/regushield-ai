@@ -109,3 +109,21 @@ def test_example_question_button_asks_it(engine):
     assert (
         engine.log.read()[0]["question"] == "Bagaimana aturan penerimaan hadiah atau gratifikasi?"
     )
+
+
+def test_continuation_source_is_labelled_instead_of_scored(engine):
+    engine.ingest(
+        "sanksi.pdf",
+        make_pdf(
+            [
+                "Jenis sanksi pelanggaran kode etik diklasifikasikan ke dalam tiga kategori:",
+                "Ringan, Sedang, dan Berat. Contoh pelanggaran berat adalah menerima suap.",
+            ]
+        ),
+    )
+    engine.retriever.top_k = 1  # so page 2 can only arrive as the continuation of page 1
+    app = run()
+    app.chat_input[0].set_value("Apa saja jenis sanksi pelanggaran kode etik?").run()
+    assert not app.exception
+    labels = [m for m in texts(app.markdown) if "sanksi.pdf · halaman 2" in m]
+    assert labels and "lanjutan dari [" in labels[0] and "relevansi" not in labels[0]

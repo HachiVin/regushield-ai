@@ -1,7 +1,8 @@
 """Split pages into retrieval chunks.
 
 Chunks never cross a page boundary, so every chunk cites exactly one page. Tables become their
-own chunks (split by rows, repeating the header, when they are long).
+own chunks (split by rows, repeating the header, when they are long). Each chunk also records its
+position in the document (``seq``), so retrieval can add the chunk that follows a hit.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ class Chunk:
     source: str  # file name
     page: int  # 1-based
     kind: str = "text"  # "text" or "table"
+    seq: int = -1  # reading order within the document; -1 = unknown (indexed before v2.1)
 
 
 def _split(text: str, size: int, separators: tuple[str, ...]) -> list[str]:
@@ -100,7 +102,7 @@ def _chunk_id(source: str, page: int, kind: str, index: int, text: str) -> str:
 
 
 def chunk_pages(pages: list[PageContent], source: str, size: int, overlap: int) -> list[Chunk]:
-    chunks = []
+    chunks: list[Chunk] = []
     for page in pages:
         pieces = [("text", t) for t in split_text(page.text, size, overlap)]
         for table in page.tables:
@@ -113,6 +115,7 @@ def chunk_pages(pages: list[PageContent], source: str, size: int, overlap: int) 
                     source,
                     page.number,
                     kind,
+                    seq=len(chunks),
                 )
             )
     return chunks

@@ -6,6 +6,8 @@ from regushield.chunking import Chunk
 from regushield.retrieval import (
     BM25Index,
     HybridRetriever,
+    Retrieved,
+    is_open_ended,
     reciprocal_rank_fusion,
     tokenize,
 )
@@ -128,3 +130,97 @@ def test_warm_up_loads_both_models(engine):
     calls = engine.retriever.reranker.calls
     engine.warm_up()
     assert engine.retriever.reranker.calls == calls + 1
+
+
+@pytest.mark.parametrize(
+    ("text", "open_ended"),
+    [
+        ("Sanksi diklasifikasikan ke dalam tiga kategori: Ringan,", True),
+        ("Pegawai wajib melapor sebagai berikut:", True),
+        ("1. Website : https://contoh.id", True),
+        ("Pelanggaran yang terbukti dikenakan sanksi.", False),
+        ("Apakah pegawai boleh menerima hadiah?", False),
+        ("Tata kelola perusahaan (Good Corporate Governance/GCG).", False),
+        ('Disebut "Letter to CEO."', False),
+    ],
+)
+def test_open_ended_detection(text, open_ended):
+    assert is_open_ended(text) is open_ended
+
+
+def ordered(texts: list[str], source: str = "a.pdf", start: int = 0) -> list[Chunk]:
+    return [
+        Chunk(f"{source}-{i}", t, source, 1 + i // 2, "text", seq=i)
+        for i, t in enumerate(texts, start=start)
+    ]
+
+
+SANKSI = ordered(
+    [
+        "Pegawai dilarang menerima gratifikasi dari nasabah.",
+        "Jenis sanksi pelanggaran kode etik diklasifikasikan ke dalam tiga kategori: Ringan,",
+        "Sedang, dan Berat. Contoh pelanggaran berat adalah menerima suap.",
+        "Rapat direksi diadakan setiap bulan.",
+    ]
+)
+
+
+def expanded_ids(retriever, hits):
+    return [(h.chunk.id, h.continues) for h in retriever.expand(hits)]
+
+
+def as_hits(chunks):
+    return [Retrieved(c, 0.0, None, None) for c in chunks]
+
+
+def test_open_ended_hit_is_followed_by_the_next_chunk_of_its_document():
+    retriever = HybridRetriever(store_with(SANKSI), OverlapReranker(), 10, 1)
+    result = retriever.retrieve("jenis sanksi pelanggaran kode etik kategori")
+    assert [(h.chunk.id, h.continues) for h in result.hits] == [
+        ("a.pdf-1", None),
+        ("a.pdf-2", "a.pdf-1"),
+    ]
+    assert result.hits[1].rerank_score is None  # added for context, not scored
+
+
+def test_complete_hits_are_not_expanded():
+    retriever = HybridRetriever(store_with(SANKSI), None, 10, 4)
+    assert expanded_ids(retriever, as_hits([SANKSI[0], SANKSI[3]])) == [
+        ("a.pdf-0", None),
+        ("a.pdf-3", None),
+    ]
+
+
+def test_a_following_chunk_that_is_already_a_hit_is_not_repeated():
+    retriever = HybridRetriever(store_with(SANKSI), None, 10, 4)
+    assert expanded_ids(retriever, as_hits([SANKSI[1], SANKSI[2]])) == [
+        ("a.pdf-1", None),
+        ("a.pdf-2", None),
+    ]
+
+
+def test_expansion_stays_inside_the_document_and_can_be_turned_off():
+    other = ordered(["Lampiran lain."], source="b.pdf")
+    store = store_with(SANKSI[:2] + other)
+    retriever = HybridRetriever(store, None, 10, 4)
+    assert expanded_ids(retriever, as_hits([SANKSI[1]])) == [("a.pdf-1", None)]  # last chunk
+    retriever = HybridRetriever(store_with(SANKSI), None, 10, 4, context_window=0)
+    assert expanded_ids(retriever, as_hits([SANKSI[1]])) == [("a.pdf-1", None)]
+
+
+def test_window_follows_an_unfinished_list_until_it_closes():
+    chunks = ordered(["Sanksi ringan:", "1. teguran lisan,", "2. teguran tertulis.", "Penutup."])
+    retriever = HybridRetriever(store_with(chunks), None, 10, 4, context_window=3)
+    assert [h.chunk.id for h in retriever.expand(as_hits(chunks[:1]))] == [
+        "a.pdf-0",
+        "a.pdf-1",
+        "a.pdf-2",
+    ]
+
+
+def test_tables_and_chunks_without_order_are_not_expanded():
+    rows = "| Jenis | Contoh |\n| --- | --- |\n| Ringan | Teguran"
+    table = Chunk("t", rows, "a.pdf", 1, "table", 0)
+    legacy = [Chunk(f"old-{i}", t, "a.pdf", 1) for i, t in enumerate(["Kategori:", "Ringan."])]
+    retriever = HybridRetriever(store_with([table, *legacy]), None, 10, 4)
+    assert len(retriever.expand(as_hits([table, legacy[0]]))) == 2

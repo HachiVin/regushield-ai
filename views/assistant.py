@@ -25,7 +25,9 @@ def render_sources(answer: Answer) -> None:
                 tags = [f"**[{s.number}]** {s.source}", f"halaman {s.page}"]
                 if s.kind == "table":
                     tags.append("tabel")
-                if s.relevance is not None:
+                if s.continues is not None:
+                    tags.append(f"lanjutan dari [{s.continues}]")
+                elif s.relevance is not None:
                     tags.append(f"relevansi {s.relevance:.2f}")
                 if s.cited:
                     tags.append(":green-badge[dikutip]")
