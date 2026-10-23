@@ -9,6 +9,7 @@ from regushield.retrieval import (
     Retrieved,
     is_open_ended,
     reciprocal_rank_fusion,
+    starts_mid_list,
     tokenize,
 )
 from regushield.store import VectorStore
@@ -224,3 +225,58 @@ def test_tables_and_chunks_without_order_are_not_expanded():
     legacy = [Chunk(f"old-{i}", t, "a.pdf", 1) for i, t in enumerate(["Kategori:", "Ringan."])]
     retriever = HybridRetriever(store_with([table, *legacy]), None, 10, 4)
     assert len(retriever.expand(as_hits([table, legacy[0]]))) == 2
+
+
+@pytest.mark.parametrize(
+    ("text", "open_ended"),
+    [
+        ("Program awareness dilakukan rutin.\n\n4. Program Awareness Kode Etik", False),
+        ("Bagian ini.\n\nPersaingan Usaha yang Adil", False),
+        ("Upaya ini dilakukan dengan penuh", True),
+        (
+            "Kebijakan Berperilaku Saling Menghargai di Tempat Kerja/Respectful Workplace (RWP)",
+            True,
+        ),
+    ],
+)
+def test_headings_are_not_treated_as_cut_sentences(text, open_ended):
+    assert is_open_ended(text) is open_ended
+
+
+@pytest.mark.parametrize(
+    ("text", "mid_list"),
+    [
+        ("2. E-mail : lapor@contoh.id 3. SMS / WA : 0811", True),
+        ("c) dilarang menerima bingkisan", True),
+        ("1. Website : https://contoh.id", False),
+        ("Pelaporan pelanggaran kode etik", False),
+        ("2024 adalah tahun pelaporan", False),
+    ],
+)
+def test_mid_list_start_detection(text, mid_list):
+    assert starts_mid_list(text) is mid_list
+
+
+WBS = [
+    Chunk(
+        "w0", "Pelanggaran dilaporkan melalui WBS-LTC dengan media berikut:", "a.pdf", 12, "text", 0
+    ),
+    Chunk(
+        "w1", "1. Website : https://contoh.id 2. E-mail : lapor@contoh.id", "a.pdf", 12, "text", 1
+    ),
+    Chunk("w2", "2. E-mail : lapor@contoh.id 3. SMS / WA : 0811-000.", "a.pdf", 12, "text", 2),
+    Chunk("w3", "3. Pembuatan Pernyataan Tahunan wajib setiap tahun.", "a.pdf", 13, "text", 3),
+]
+
+
+def test_a_hit_that_starts_mid_list_gets_the_chunk_before_it():
+    retriever = HybridRetriever(store_with(WBS), None, 10, 4)
+    assert [(h.chunk.id, h.precedes, h.continues) for h in retriever.expand(as_hits(WBS[2:3]))] == [
+        ("w1", "w2", None),
+        ("w2", None, None),
+    ]
+
+
+def test_a_numbered_section_at_the_top_of_a_page_is_not_expanded_backwards():
+    retriever = HybridRetriever(store_with(WBS), None, 10, 4)
+    assert [h.chunk.id for h in retriever.expand(as_hits(WBS[3:]))] == ["w3"]

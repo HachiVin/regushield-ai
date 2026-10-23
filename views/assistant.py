@@ -27,6 +27,8 @@ def render_sources(answer: Answer) -> None:
                     tags.append("tabel")
                 if s.continues is not None:
                     tags.append(f"lanjutan dari [{s.continues}]")
+                elif s.precedes is not None:
+                    tags.append(f"bagian sebelum [{s.precedes}]")
                 elif s.relevance is not None:
                     tags.append(f"relevansi {s.relevance:.2f}")
                 if s.cited:

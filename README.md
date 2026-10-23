@@ -30,7 +30,9 @@ three safeguards:
 - **Context expansion.** When a retrieved passage stops mid-sentence or mid-list ("...three
   categories: Light,"), the next passage of the same document is added after it and labelled
   as its continuation. The rest of a list rarely shares words with the question, so it would
-  never be retrieved on its own.
+  never be retrieved on its own. A passage that starts in the middle of a numbered list
+  ("2. E-mail ...") gets the passage before it on the same page, where the list begins.
+  Section headings ("4. Program Awareness") are not treated as cut-off sentences.
 - **Relevance gate.** If no passage reaches the minimum relevance, the LLM is never called.
   That costs nothing and leaves no chance to hallucinate.
 - **Cited, streamed answers.** Groq (`openai/gpt-oss-20b`) streams the answer with `[n]`

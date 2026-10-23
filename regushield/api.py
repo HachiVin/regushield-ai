@@ -32,6 +32,9 @@ class SourceOut(BaseModel):
     continues: int | None = Field(
         None, description="Number of the source this chunk continues (context expansion)."
     )
+    precedes: int | None = Field(
+        None, description="Number of the source this chunk comes right before (context expansion)."
+    )
     text: str
 
 

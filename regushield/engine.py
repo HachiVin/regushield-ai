@@ -53,6 +53,7 @@ class Source:
     relevance: float | None
     cited: bool = False
     continues: int | None = None  # number of the source this one continues (context expansion)
+    precedes: int | None = None  # number of the source this one comes right before
 
 
 @dataclass
@@ -165,6 +166,7 @@ def _sources(retrieval: RetrievalResult) -> list[Source]:
             h.chunk.text,
             h.rerank_score,
             continues=numbers.get(h.continues) if h.continues else None,
+            precedes=numbers.get(h.precedes) if h.precedes else None,
         )
         for n, h in enumerate(retrieval.hits, start=1)
     ]

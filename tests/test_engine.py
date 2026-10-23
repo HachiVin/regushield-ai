@@ -127,6 +127,26 @@ def test_a_list_cut_at_a_page_break_reaches_the_llm_with_its_continuation(make_e
     assert "[2] (lanjutan dari [1], sanksi.pdf, halaman 2)\nRingan, Sedang, dan Berat." in user
 
 
+def test_a_hit_that_starts_mid_list_brings_the_start_of_the_list(make_engine, settings):
+    eng = make_engine(
+        chat=FakeChat("Website dan e-mail [1][2]."),
+        settings_override=dataclasses.replace(settings, top_k=1, chunk_size=60, chunk_overlap=0),
+    )
+    eng.ingest(
+        "wbs.pdf",
+        make_pdf(["Media laporan:\n\n1. Website resmi bank.\n\n2. Kotak surat lapor resmi bank."]),
+    )
+    chunks = sorted(eng.store.all_chunks(), key=lambda c: c.seq)
+    assert [c.text[:2] for c in chunks] == ["Me", "2."]
+    answer = eng.ask_sync("kotak surat lapor")
+    assert [(s.text[:2], s.precedes, s.continues) for s in answer.sources] == [
+        ("Me", 2, None),
+        ("2.", None, None),
+    ]
+    user = eng.chat.messages[-1][1]["content"]
+    assert "[1] (bagian sebelum [2], wbs.pdf, halaman 1)\nMedia laporan:" in user
+
+
 def test_irrelevant_question_is_not_sent_to_the_llm(engine):
     answer = engine.ask_sync("Siapa presiden pertama Amerika Serikat?")
     assert answer.status == "not_found" and answer.text == NOT_FOUND

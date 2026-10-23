@@ -4,6 +4,7 @@ AppTest fails to re-run a page after ``st.feedback`` has rendered, so each test 
 second page starts a fresh AppTest instead of switching pages in the same one.
 """
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -127,3 +128,16 @@ def test_continuation_source_is_labelled_instead_of_scored(engine):
     assert not app.exception
     labels = [m for m in texts(app.markdown) if "sanksi.pdf · halaman 2" in m]
     assert labels and "lanjutan dari [" in labels[0] and "relevansi" not in labels[0]
+
+
+def test_preceding_source_is_labelled(engine):
+    engine.settings = dataclasses.replace(engine.settings, chunk_size=60, chunk_overlap=0)
+    engine.ingest(
+        "wbs.pdf",
+        make_pdf(["Media laporan:\n\n1. Website resmi bank.\n\n2. Kotak surat lapor resmi bank."]),
+    )
+    engine.retriever.top_k = 1
+    app = run()
+    app.chat_input[0].set_value("kotak surat lapor").run()
+    assert not app.exception
+    assert any("bagian sebelum [" in m for m in texts(app.markdown))

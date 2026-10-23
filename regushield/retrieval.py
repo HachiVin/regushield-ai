@@ -7,7 +7,8 @@ candidates together with the question and gives each a comparable relevance scor
 
 Context expansion: a hit that stops mid-sentence or mid-list ("...tiga kategori: Ringan,") is
 followed by the next chunk of the same document, because the rest of the list usually shares
-no words with the question and would never be retrieved on its own.
+no words with the question and would never be retrieved on its own. A hit that starts in the
+middle of a numbered list ("2. E-mail ...") is preceded by the chunk holding the list's start.
 """
 
 from __future__ import annotations
@@ -33,12 +34,33 @@ STOPWORDS = frozenset(
 )
 RRF_K = 60
 _SENTENCE_END = (".", "!", "?")
+_CONTINUES = (",", ":", ";", "-", "–")
 _CLOSERS = "\"'”’)]*_ "
+HEADING_MAX_CHARS = 60
+# A chunk that opens with item 2 or later ("2. E-mail", "c) ...") starts inside a list.
+_MID_LIST_START = re.compile(r"\s*(?:[2-9]|[1-9]\d|[b-z])[.)]\s")
 
 
 def is_open_ended(text: str) -> bool:
-    """True when a chunk was cut before its sentence or list ended."""
-    return not text.rstrip(_CLOSERS).endswith(_SENTENCE_END)
+    """True when a chunk was cut before its sentence or list ended.
+
+    A short last line in Title Case ("4. Program Awareness Kode Etik") is a section heading,
+    not a cut sentence: the section that follows is a different topic, so it is not added.
+    """
+    stripped = text.rstrip(_CLOSERS)
+    if not stripped or stripped.endswith(_SENTENCE_END):
+        return False
+    if stripped.endswith(_CONTINUES):
+        return True
+    last_line = stripped.splitlines()[-1].strip()
+    last_word = last_line.split()[-1] if last_line else ""
+    is_heading = len(last_line) <= HEADING_MAX_CHARS and last_word[:1].isupper()
+    return not is_heading
+
+
+def starts_mid_list(text: str) -> bool:
+    """True when a chunk opens with list item 2 or later, so the list began in the chunk before."""
+    return _MID_LIST_START.match(text) is not None
 
 
 def tokenize(text: str) -> list[str]:
@@ -92,6 +114,7 @@ class Retrieved:
     vector_rank: int | None
     rerank_score: float | None = None
     continues: str | None = None  # id of the hit this chunk was added after (context expansion)
+    precedes: str | None = None  # id of the hit this chunk was added before (context expansion)
 
     @property
     def relevance(self) -> float | None:
@@ -135,6 +158,18 @@ class HybridRetriever:
             c.id: i for ordered in self._reading_order.values() for i, c in enumerate(ordered)
         }
 
+    def preceding(self, chunk: Chunk) -> Chunk | None:
+        """The text chunk right before ``chunk`` on the same page.
+
+        Only the same page: a page that opens with "3. ..." is usually the next numbered
+        section, not a list cut by the chunker.
+        """
+        position = self._position.get(chunk.id)
+        if not position:  # unknown, or the first chunk of the document
+            return None
+        before = self._reading_order[chunk.source][position - 1]
+        return before if before.page == chunk.page else None
+
     def following(self, chunk: Chunk, n: int) -> list[Chunk]:
         """Up to ``n`` text chunks that come right after ``chunk`` in its document."""
         position = self._position.get(chunk.id)
@@ -143,14 +178,22 @@ class HybridRetriever:
         return self._reading_order[chunk.source][position + 1 : position + 1 + n]
 
     def expand(self, hits: list[Retrieved]) -> list[Retrieved]:
-        """Put the chunk that follows each open-ended hit right after it (deduplicated)."""
+        """Add the chunk before a hit that starts mid-list and the chunk after a hit that stops
+        mid-sentence, next to that hit (each chunk at most once)."""
         if self.context_window <= 0:
             return hits
         taken = {hit.chunk.id for hit in hits}
         out: list[Retrieved] = []
         for hit in hits:
+            if hit.chunk.kind != "text":
+                out.append(hit)
+                continue
+            before = self.preceding(hit.chunk) if starts_mid_list(hit.chunk.text) else None
+            if before is not None and before.id not in taken:
+                taken.add(before.id)
+                out.append(Retrieved(before, 0.0, None, None, precedes=hit.chunk.id))
             out.append(hit)
-            if hit.chunk.kind != "text" or not is_open_ended(hit.chunk.text):
+            if not is_open_ended(hit.chunk.text):
                 continue
             for chunk in self.following(hit.chunk, self.context_window):
                 if chunk.id in taken:
