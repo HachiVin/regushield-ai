@@ -321,8 +321,9 @@ def test_turning_ocr_on_reindexes_a_document_uploaded_without_it(make_engine, se
     assert eng.ingest("sanksi.pdf", pdf).ocr_images == 0
     eng.ocr = FakeOcr(SANKSI_IMAGE)
     report = eng.ingest("sanksi.pdf", pdf)
-    assert report.status == "replaced" and report.ocr_images == 1
-    assert eng.ingest("sanksi.pdf", pdf).status == "unchanged"
+    assert report.status == "replaced" and report.ocr_images == 1 and report.ocr_chunks == 1
+    again = eng.ingest("sanksi.pdf", pdf)
+    assert again.status == "unchanged" and again.ocr_images is None and again.ocr_chunks == 1
 
 
 def test_answer_carries_the_retrieval_trace_for_the_audit_export(engine):

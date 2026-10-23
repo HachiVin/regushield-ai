@@ -14,6 +14,10 @@ from regushield.engine import IngestError, RAGEngine
 from regushield.monitoring import summarize
 
 
+def _images(count: int | None) -> str:
+    return "" if count is None else f", {count} images read"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="regushield", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -37,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"{report.status:9s} {report.source}: {report.pages} pages, "
                     f"{report.chunks} chunks ({report.tables} tables, "
-                    f"{report.ocr_images} OCR images)"
+                    f"{report.ocr_chunks} from OCR{_images(report.ocr_images)})"
                 )
             except (IngestError, OSError) as exc:
                 failed += 1

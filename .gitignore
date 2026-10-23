@@ -14,6 +14,9 @@ venv/
 data/
 .cache/
 
+# Evaluation runs: one JSON per run; only the latest summary (latest.md) is committed
+eval/results/report-*.json
+
 # Editors / OS
 .DS_Store
 .idea/

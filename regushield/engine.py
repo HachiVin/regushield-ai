@@ -42,7 +42,8 @@ class IngestReport:
     pages: int = 0
     chunks: int = 0
     tables: int = 0
-    ocr_images: int = 0
+    ocr_images: int | None = 0  # images read now; None when the file was not read again
+    ocr_chunks: int = 0
 
 
 @dataclass
@@ -269,7 +270,7 @@ class RAGEngine:
         current = doc and doc.ordered and doc.index_version == self.index_version
         if current and doc.sha256 == sha256:
             return IngestReport(
-                source, "unchanged", doc.pages, doc.chunks, doc.tables, doc.ocr_chunks
+                source, "unchanged", doc.pages, doc.chunks, doc.tables, None, doc.ocr_chunks
             )
         duplicate = next(
             (d for d in existing.values() if d.sha256 == sha256 and d.source != source), None
@@ -297,6 +298,7 @@ class RAGEngine:
             chunks=len(chunks),
             tables=sum(1 for c in chunks if c.kind == "table"),
             ocr_images=sum(p.ocr_images for p in pages),
+            ocr_chunks=sum(1 for c in chunks if c.kind == "ocr"),
         )
 
     def delete(self, source: str) -> bool:

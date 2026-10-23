@@ -30,7 +30,12 @@ def ingest(engine, files) -> None:
                     "success",
                     f"**{report.source}**: {STATUS_TEXT[report.status]} — "
                     f"{report.pages} halaman, {report.chunks} potongan, "
-                    f"{report.tables} tabel, {report.ocr_images} gambar dibaca dengan OCR.",
+                    f"{report.tables} tabel, {report.ocr_chunks} potongan dari OCR"
+                    + (
+                        f" ({report.ocr_images} gambar dibaca)."
+                        if report.ocr_images is not None
+                        else "."
+                    ),
                 )
             )
         except IngestError as exc:

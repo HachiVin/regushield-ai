@@ -6,7 +6,7 @@ do not contain the answer, it says so instead of guessing.
 
 **Live demo:** https://regushield-ai-bnf3fmcobcvkp5ne3lg5en.streamlit.app/
 
-[ISI: screenshot of the Assistant page after uploading a real document]
+![ReguShield answering from a sanctions table that is an image in the PDF, read with OCR](docs/assistant.png)
 
 ## The problem
 
@@ -124,17 +124,34 @@ If the dataset lists `expected_pages`, the page hit rate is reported too. Judge 
 that are not valid JSON are reported as missing, never as 0. Results are written to
 `eval/results/` as a JSON report and as `latest.md`.
 
-| Metric | Result |
-|---|---|
-| Faithfulness | [ISI: setelah menjalankan evaluasi] |
-| Context relevance | [ISI] |
-| Correctness | [ISI] |
-| Latency p50 / p95 | [ISI] |
-| Cases | [ISI: jumlah pertanyaan di dataset] |
+Results on the 8 questions in `eval/dataset.json` (judge: `openai/gpt-oss-120b`). The first
+column is the same code run on an index built before OCR and 500-character chunks, which shows
+what those changes did:
 
-The questions and ground-truth answers are hand-written from a code-of-conduct document
-([ISI: nama dan sumber dokumen]). It is small; extending it is the most useful next step for
-tuning the threshold and chunk size.
+| Metric | Old index (800-char chunks, no OCR) | Current |
+|---|---|---|
+| Faithfulness | 0.63 | **0.88** |
+| Context relevance | 0.54 | **0.86** |
+| Correctness | 0.63 | **0.94** |
+| Page hit rate (4 cases with expected pages) | 0.50 | **0.75** |
+| Answers citing a source | 0.63 | **0.88** |
+| "Not found" answers | 3 | **1** (the off-topic KPR question, which is the right answer) |
+| Latency p50 / p95 | 3.4 s / 7.1 s | 2.8 s / 6.5 s |
+| Answer cost for all 8 (paid-tier list price) | $0.0010 | $0.0011 |
+
+Per-question answers, scores and judge notes for the current run:
+[`eval/results/latest.md`](eval/results/latest.md).
+
+Latency was measured on a laptop CPU (the reranker runs locally) while Groq's free tier was
+rate-limiting the judge, so p95 includes retries; on Streamlit Community Cloud single answers
+took 1–2 s. Cost is an estimate: on the free tier nothing is billed.
+
+The questions and ground-truth answers are hand-written from
+[*Kode Etik (Code of Conduct) PT Bank Mandiri (Persero) Tbk*](https://www.bankmandiri.co.id/documents/38268824/435038177/a.+Kode+Etik+(Indonesia)_2025.pdf/6e1a293c-6c38-2cc5-c438-820482dd8a8b?t=1743052652570)
+(public PDF, 13 pages, 2025 edition with 2024 data), chosen because about half of its content
+(the rule tables on pages 1–6 and the sanction tables on pages 12–13) is images, so it tests
+OCR, tables and refusals together. Eight questions are few; extending the set is the most
+useful next step for tuning the gate and chunk size.
 
 ## Cost: free to run
 
