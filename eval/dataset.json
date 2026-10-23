@@ -13,5 +13,15 @@
     "question": "Siapa saja pihak yang diperbolehkan untuk menyampaikan laporan dugaan pelanggaran melalui sistem whistleblowing tersebut?",
     "document": "Semua Dokumen",
     "ground_truth": "Seluruh pihak, baik dari internal (Jajaran Bank) maupun pihak eksternal, diperbolehkan untuk menyampaikan laporan."
+  },
+  {
+    "question": "Bagaimana aturan penerimaan hadiah atau gratifikasi?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Jajaran Bank Mandiri berkomitmen untuk tidak menerima atau memberi gratifikasi yang berpotensi menimbulkan benturan kepentingan. Potensi penerimaan gratifikasi juga diidentifikasi lewat Annual Disclosure (aspek Penyalahgunaan Jabatan) yang wajib diisi setiap tahun.",
+    "expected_pages": [
+      10,
+      11
+    ],
+    "note": "Regresi: versi prompt sebelumnya menjawab 'tidak ditemukan' padahal kutipan halaman 10 memuat aturannya."
   }
 ]
