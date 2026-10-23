@@ -1,0 +1,27 @@
+# docker compose up --build
+#   UI : http://localhost:8501
+#   API: http://localhost:8000/docs
+# Both services share the same volume: documents indexed in the UI are queryable from the API.
+services:
+  ui:
+    build: .
+    ports: ["8501:8501"]
+    env_file: .env
+    volumes: [regushield-data:/app/data]
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: ["uvicorn", "regushield.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    env_file: .env
+    volumes: [regushield-data:/app/data]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  regushield-data:
