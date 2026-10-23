@@ -1,137 +1,246 @@
-"""OCR for images inside PDFs (tables or text pasted as pictures, scanned pages).
+"""PDF -> per-page text, tables and OCR text (PyMuPDF), with light cleaning of real-world PDFs.
 
-RapidOCR runs PP-OCR models through ONNX Runtime on CPU, and its models ship inside the wheel,
-so there is nothing to download and nothing to pay for. Its default recognizer is trained on
-Chinese and English; Indonesian uses the same Latin letters, but words are sometimes merged
-("kepadanasabah"), which is why OCR text is marked as such wherever it is shown.
+* Page numbers are 1-based, as printed on the page, so citations point to the right page.
+* Tables are detected with ``find_tables()`` and kept as Markdown, so rows and columns of a
+  sanctions table stay together instead of being flattened into a word soup.
+* Running headers/footers that repeat on most pages, and bare page numbers, are removed so
+  they do not pollute keyword search.
+* Images large enough to hold text (a table pasted as a picture, a scanned page) are read with
+  OCR when an OCR engine is given. Their text keeps its place in the reading order of the page.
+  Images repeated on most pages (logos, letterheads) are skipped.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from statistics import median
-from typing import Protocol
+import re
+from collections import Counter
+from dataclasses import dataclass, field
 
-OCR_MARKER = "[Teks dari gambar (OCR)]"
-UPSCALE_BELOW_PX = 1600
+import pymupdf
+
+from regushield.ocr import OcrEngine, lines_to_text
+
+
+class PDFError(Exception):
+    """The file cannot be read as a PDF, is encrypted, or has no extractable text."""
 
 
 @dataclass(frozen=True)
-class OcrLine:
+class Segment:
+    kind: str  # "text" or "ocr"
     text: str
-    x0: float
+    context: str = ""  # OCR only: the text line just before the image, usually its heading
+
+
+@dataclass
+class PageContent:
+    number: int  # 1-based
+    text: str  # the page's own text layer (without OCR)
+    tables: list[str] = field(default_factory=list)  # Markdown
+    segments: list[Segment] = field(default_factory=list)  # text and OCR in reading order
+    ocr_images: int = 0
+
+    def reading_order(self) -> list[Segment]:
+        return self.segments or ([Segment("text", self.text)] if self.text else [])
+
+
+@dataclass
+class _Image:
     y0: float
-    x1: float
-    y1: float
-    score: float
-
-    @property
-    def height(self) -> float:
-        return self.y1 - self.y0
-
-    @property
-    def center_y(self) -> float:
-        return (self.y0 + self.y1) / 2
+    rect: pymupdf.Rect
+    zoom: float
+    digest: bytes
+    xref: int = 0  # 0 = inline image, rendered from the page instead
 
 
-class OcrEngine(Protocol):
-    def read(self, png: bytes) -> list[OcrLine]:
-        """Text lines found in a PNG image, with their boxes in image pixels."""
-        ...
+_PAGE_NUMBER = re.compile(
+    r"^\s*(?:hal(?:aman)?\.?\s*)?-?\s*\d{1,4}\s*-?\s*(?:/\s*\d{1,4})?\s*$", re.I
+)
+# An image smaller than this (fraction of the page) is a logo, icon or bullet, not text.
+MIN_IMAGE_WIDTH = 0.25
+MIN_IMAGE_AREA = 0.02
+MIN_IMAGE_HEIGHT_PT = 30.0
 
 
-class RapidOcrEngine:
-    """RapidOCR (ONNX). The angle classifier is off: rendered PDF images are never rotated,
-    and with it on, some lines came back upside down as gibberish."""
-
-    def __init__(self, min_score: float = 0.6) -> None:
-        self.min_score = min_score
-        self._engine = None
-
-    def _load(self):
-        if self._engine is None:
-            from rapidocr_onnxruntime import RapidOCR
-
-            self._engine = RapidOCR()
-        return self._engine
-
-    def read(self, png: bytes) -> list[OcrLine]:
-        import cv2
-        import numpy as np
-
-        image = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-        if image is None:
-            return []
-        image = _to_bgr_on_white(image, np)
-        scale = 1.0
-        if image.shape[1] < UPSCALE_BELOW_PX:
-            # Small text: twice the size with a sharp (cubic) filter. In testing this recovered
-            # lines the detector skipped and fixed most misread letters ("Dilarong").
-            scale = 2.0
-            image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        result, _elapsed = self._load()(image, use_cls=False)
-        lines = []
-        for box, text, score in result or []:
-            xs = [float(p[0]) for p in box]
-            ys = [float(p[1]) for p in box]
-            if float(score) >= self.min_score and text.strip():
-                lines.append(
-                    OcrLine(text.strip(), min(xs), min(ys), max(xs), max(ys), float(score))
-                )
-        return lines
+def _normalize_line(line: str) -> str:
+    return re.sub(r"\d+", "#", re.sub(r"\s+", " ", line.strip().lower()))
 
 
-def _to_bgr_on_white(image, np):
-    """Grey or colour, with or without transparency -> 3-channel image on a white background
-    (transparent pixels would otherwise turn black and hide dark text)."""
-    import cv2
-
-    if image.ndim == 2:
-        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    if image.shape[2] == 4:
-        alpha = image[:, :, 3:4].astype(np.float32) / 255.0
-        rgb = image[:, :, :3].astype(np.float32)
-        return (rgb * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
-    if image.shape[2] == 2:  # grey + alpha
-        alpha = image[:, :, 1:2].astype(np.float32) / 255.0
-        grey = image[:, :, 0:1].astype(np.float32)
-        return np.repeat(grey * alpha + 255.0 * (1.0 - alpha), 3, axis=2).astype(np.uint8)
-    return image
+def _clean_block(text: str) -> str:
+    """Join lines broken by the PDF layout inside a paragraph and collapse whitespace."""
+    lines = [line.strip() for line in text.splitlines()]
+    return re.sub(r"[ \t]+", " ", " ".join(line for line in lines if line)).strip()
 
 
-def available() -> bool:
-    """True when the OCR dependencies are installed."""
+def _page_blocks(page: pymupdf.Page) -> tuple[list[tuple[float, str]], list[str]]:
+    tables, table_rects = [], []
     try:
-        import cv2  # noqa: F401
-        import rapidocr_onnxruntime  # noqa: F401
-    except Exception:  # ImportError, or OpenCV missing a system library such as libGL
-        return False
-    return True
+        for table in page.find_tables().tables:
+            if table.row_count >= 2 and table.col_count >= 2:
+                tables.append(table.to_markdown().strip())
+                table_rects.append(pymupdf.Rect(table.bbox))
+    except Exception:  # table detection is best-effort; text extraction still works
+        tables, table_rects = [], []
+
+    blocks = []
+    for x0, y0, x1, y1, text, _no, block_type in page.get_text("blocks", sort=True):
+        if block_type != 0:  # images
+            continue
+        rect = pymupdf.Rect(x0, y0, x1, y1)
+        if any(rect.intersects(t) for t in table_rects):
+            continue  # already captured as a table
+        cleaned = _clean_block(text)
+        if cleaned:
+            blocks.append((y0, cleaned))
+    return blocks, tables
 
 
-def lines_to_text(lines: list[OcrLine]) -> str:
-    """Rebuild reading order: lines whose boxes share a row are joined left to right, with
-    " | " between cells that are far apart (table columns), rows top to bottom."""
-    if not lines:
-        return ""
-    line_height = median(line.height for line in lines) or 1.0
-    rows: list[list[OcrLine]] = []
-    for line in sorted(lines, key=lambda item: item.center_y):
-        if rows and abs(line.center_y - _row_center(rows[-1])) <= line_height / 2:
-            rows[-1].append(line)
-        else:
-            rows.append([line])
+def _page_images(page: pymupdf.Page) -> list[_Image]:
+    """Images on the page big enough to contain readable text."""
+    page_rect = page.rect
+    images = []
+    try:
+        infos = page.get_image_info(hashes=True, xrefs=True)
+    except Exception:
+        return []
+    for info in infos:
+        rect = pymupdf.Rect(info["bbox"]) & page_rect
+        if rect.is_empty:
+            continue
+        big_enough = (
+            rect.width >= MIN_IMAGE_WIDTH * page_rect.width
+            and rect.height >= MIN_IMAGE_HEIGHT_PT
+            and rect.get_area() >= MIN_IMAGE_AREA * page_rect.get_area()
+        )
+        if not big_enough:
+            continue
+        # Render at the image's own resolution (no blurry resampling); the OCR engine then
+        # upscales it with a sharp filter.
+        native_width = float(info.get("width") or rect.width)
+        zoom = min(4.0, max(1.0, native_width / rect.width))
+        images.append(
+            _Image(rect.y0, rect, zoom, info.get("digest") or b"", int(info.get("xref") or 0))
+        )
+    return images
 
-    out = []
-    for row in rows:
-        row.sort(key=lambda item: item.x0)
-        text = row[0].text
-        for previous, line in zip(row, row[1:], strict=False):
-            gap = line.x0 - previous.x1
-            text += (" | " if gap > 2 * line_height else " ") + line.text
-        out.append(text)
-    return "\n".join(out)
+
+def _repeated_lines(pages_blocks: list[list[str]]) -> set[str]:
+    """Lines (digits ignored) that appear at the top/bottom of at least 60% of pages."""
+    if len(pages_blocks) < 3:
+        return set()
+    counts: Counter[str] = Counter()
+    for blocks in pages_blocks:
+        edges = {_normalize_line(b) for b in blocks[:2] + blocks[-2:]}
+        counts.update(edges)
+    threshold = 0.6 * len(pages_blocks)
+    return {line for line, n in counts.items() if n >= threshold and len(line) <= 120}
 
 
-def _row_center(row: list[OcrLine]) -> float:
-    return sum(line.center_y for line in row) / len(row)
+def _repeated_images(pages_images: list[list[_Image]]) -> set[bytes]:
+    """Images (by content hash) shown on at least 60% of pages: logos and letterheads."""
+    if len(pages_images) < 3:
+        return set()
+    counts: Counter[bytes] = Counter()
+    for images in pages_images:
+        counts.update({image.digest for image in images if image.digest})
+    return {digest for digest, n in counts.items() if n >= 0.6 * len(pages_images)}
+
+
+def _image_png(page: pymupdf.Page, image: _Image) -> bytes:
+    """The image's own pixels when it is stored as an object (sharpest for OCR), otherwise the
+    page area rendered at the image's resolution. Transparency is kept for the OCR engine."""
+    if image.xref:
+        try:
+            doc = page.parent
+            pixmap = pymupdf.Pixmap(doc, image.xref)
+            if pixmap.colorspace and pixmap.colorspace.n not in (1, 3):  # CMYK and the like
+                pixmap = pymupdf.Pixmap(pymupdf.csRGB, pixmap)
+            smask = doc.extract_image(image.xref).get("smask") or 0
+            if smask and not pixmap.alpha:
+                pixmap = pymupdf.Pixmap(pixmap, pymupdf.Pixmap(doc, smask))
+            return pixmap.tobytes("png")
+        except Exception:
+            pass  # unusual encodings: fall back to rendering the page area
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(image.zoom, image.zoom), clip=image.rect)
+    return pixmap.tobytes("png")
+
+
+def _ocr_image(page: pymupdf.Page, image: _Image, ocr: OcrEngine) -> str:
+    return lines_to_text(ocr.read(_image_png(page, image)))
+
+
+def _last_sentence(text: str, limit: int = 100) -> str:
+    """The last sentence (or heading) of a text block, at most ``limit`` characters."""
+    sentence = re.split(r"(?<=[.!?])\s+", text.strip())[-1]
+    if len(sentence) > limit:
+        sentence = sentence[-limit:].split(" ", 1)[-1]
+    return sentence
+
+
+def _segments(items: list[tuple[float, int, str, str]]) -> list[Segment]:
+    """Merge text blocks and OCR text by vertical position into reading-order segments."""
+    segments: list[Segment] = []
+    texts: list[str] = []
+    for _y, _order, kind, text in sorted(items, key=lambda item: (item[0], item[1])):
+        if kind == "text":
+            texts.append(text)
+            continue
+        context = ""
+        if texts:
+            segments.append(Segment("text", "\n\n".join(texts)))
+            context = _last_sentence(texts[-1])
+            texts = []
+        segments.append(Segment("ocr", text, context))
+    if texts:
+        segments.append(Segment("text", "\n\n".join(texts)))
+    return segments
+
+
+def read_pdf(
+    data: bytes, ocr: OcrEngine | None = None, max_ocr_images: int = 50
+) -> list[PageContent]:
+    """Extract every page. Raises ``PDFError`` for unreadable or text-less files.
+
+    With ``ocr``, up to ``max_ocr_images`` images per document are read as text.
+    """
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        raise PDFError("File bukan PDF yang valid atau rusak.") from exc
+    with doc:
+        if doc.needs_pass:
+            raise PDFError("PDF terkunci dengan password.")
+        extracted = [_page_blocks(page) for page in doc]
+        images = [_page_images(page) if ocr else [] for page in doc]
+        repeated = _repeated_lines([[text for _y, text in blocks] for blocks, _ in extracted])
+        logos = _repeated_images(images)
+
+        pages = []
+        budget = max_ocr_images
+        for index, ((blocks, tables), page_images) in enumerate(
+            zip(extracted, images, strict=True)
+        ):
+            items = [
+                (y, 1, "text", text)
+                for y, text in blocks
+                if _normalize_line(text) not in repeated and not _PAGE_NUMBER.match(text)
+            ]
+            read = 0
+            for image in page_images:
+                if image.digest in logos or budget <= 0:
+                    continue
+                budget -= 1
+                text = _ocr_image(doc[index], image, ocr)  # type: ignore[arg-type]
+                if text.strip():
+                    items.append((image.y0, 0, "ocr", text))
+                    read += 1
+            segments = _segments(items)
+            page_text = "\n\n".join(s.text for s in segments if s.kind == "text")
+            pages.append(PageContent(index + 1, page_text, tables, segments, read))
+
+    if not any(p.text or p.tables or p.ocr_images for p in pages):
+        hint = "" if ocr else " Aktifkan OCR untuk membaca PDF hasil scan."
+        raise PDFError(
+            f"Tidak ada teks yang bisa dibaca (kemungkinan PDF hasil scan/gambar).{hint}"
+        )
+    return pages
