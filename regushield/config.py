@@ -41,7 +41,11 @@ class Settings:
     chunk_overlap: int = 80
     candidates: int = 20  # taken from each retriever (BM25 and vector) before fusion
     top_k: int = 5  # chunks sent to the LLM
-    fuse_rerank: bool = True  # final order = RRF(BM25, vector, reranker); False = reranker only
+    # Final order: the reranker's (default), or RRF of BM25, vector and reranker ranks. Measured
+    # on 10 audited questions with 500-character chunks: the chunk holding the answer was in the
+    # top 5 for 9 with the reranker's order and 7 with fusion, which demoted tables that the
+    # vector search does not find. (With 800-character chunks the reranker was the weak one.)
+    fuse_rerank: bool = False
     context_window: int = 1  # chunks added after a hit that stops mid-sentence (0 = off)
     expand_top: int = 3  # only the best N hits get context expansion
     min_relevance: float = 0.10  # rerank score below this for every chunk -> "not found"

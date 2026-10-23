@@ -293,7 +293,7 @@ def test_rank_fusion_keeps_a_chunk_that_bm25_and_vector_put_first_when_the_reran
         "Rapat direksi diadakan setiap bulan.",
     ]
     chunks = [chunk(i, t) for i, t in enumerate(texts)]
-    fused = HybridRetriever(store_with(chunks), ReversedReranker(), 10, 2)
+    fused = HybridRetriever(store_with(chunks), ReversedReranker(), 10, 2, fuse_rerank=True)
     assert fused.retrieve(query).hits[0].chunk.id == "c0"
     rerank_only = HybridRetriever(store_with(chunks), ReversedReranker(), 10, 2, fuse_rerank=False)
     assert "c0" not in [h.chunk.id for h in rerank_only.retrieve(query).hits]

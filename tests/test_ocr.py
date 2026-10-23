@@ -120,3 +120,46 @@ def test_the_reason_ocr_is_unavailable_is_reported(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert "libgthread-2.0.so.0" in ocr.unavailable_reason()
     assert not ocr.available()
+
+
+def test_a_label_column_beside_body_text_gets_its_own_line_not_mixed_into_sentences():
+    body = [
+        "Penyalahgunaan jabatan dan gratifikasi merupakan tindakan yang dilarang oleh",
+        "peraturan. Oleh karenanya seluruh Jajaran Bank:",
+        "3. Dilarang menerima bingkisan dalam bentuk apapun pada saat Hari Raya Keagamaan",
+        "dari nasabah, rekanan, dan pihak lain yang menimbulkan potensi benturan",
+        "kepentingan.",
+        "4. Dalam hal nasabah memberikan bingkisan pada saat tertentu, pegawai wajib",
+        "mengembalikan bingkisan tersebut dengan penjelasan secara sopan.",
+        "5. Pegawai yang menerima gratifikasi harus melapor kepada atasannya.",
+    ]
+    lines = [line(text, 340, 20 + 30 * i, 340 + 10 * len(text)) for i, text in enumerate(body)]
+    lines += [line("Penyalahgunaan", 55, 80), line("3", 15, 110, 25), line("Gratifikasi", 55, 110)]
+    out = lines_to_text(lines).split("\n")
+    assert out[0] == "3 Penyalahgunaan Gratifikasi"
+    assert out[3].endswith("Hari Raya Keagamaan") and out[4].startswith("dari nasabah")
+
+
+def test_a_table_first_column_stays_in_its_rows():
+    rows = [("Sanksi Ringan", "Teguran Tertulis Pertama"), ("Sanksi Berat", "Pemutusan Hubungan")]
+    lines = [line(a, 1, 10 + 40 * i) for i, (a, _b) in enumerate(rows)]
+    lines += [line(b, 540, 10 + 40 * i) for i, (_a, b) in enumerate(rows)]
+    assert lines_to_text(lines) == (
+        "Sanksi Ringan | Teguran Tertulis Pertama\nSanksi Berat | Pemutusan Hubungan"
+    )
+
+
+def test_each_ocr_chunk_is_headed_by_the_section_label_in_effect():
+    from regushield.pdf import PageContent, Segment
+
+    text = "\n".join(
+        ["3 Penyalahgunaan Jabatan dan Gratifikasi"]
+        + [f"{n}. Aturan gratifikasi nomor {n} berlaku bagi seluruh pegawai." for n in range(1, 9)]
+        + ["4 Perilaku Insiders"]
+        + [f"{n}. Aturan insider nomor {n} berlaku bagi seluruh pegawai." for n in range(1, 9)]
+    )
+    labels = ("3 Penyalahgunaan Jabatan dan Gratifikasi", "4 Perilaku Insiders")
+    page = PageContent(1, "", segments=[Segment("ocr", text, "Judul di atas gambar", labels)])
+    headers = [c.text.split("\n")[0] for c in chunk_pages([page], "k.pdf", 300, 0)]
+    assert headers[0] == f"{OCR_MARKER} · 3 Penyalahgunaan Jabatan dan Gratifikasi"
+    assert headers[-1] == f"{OCR_MARKER} · 4 Perilaku Insiders"

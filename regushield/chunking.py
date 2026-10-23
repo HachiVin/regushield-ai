@@ -11,7 +11,7 @@ import hashlib
 from dataclasses import dataclass
 
 from regushield.ocr import OCR_MARKER
-from regushield.pdf import PageContent
+from regushield.pdf import PageContent, Segment
 
 _SEPARATORS = ("\n\n", "\n", ". ", "; ", ", ", " ")
 
@@ -102,17 +102,31 @@ def _chunk_id(source: str, page: int, kind: str, index: int, text: str) -> str:
     return digest[:20]
 
 
+def _ocr_pieces(segment: Segment, size: int, overlap: int) -> list[str]:
+    """OCR text split into chunks that each say where they come from and which heading they
+    sit under, so they are never mistaken for the text layer and can be found by that heading.
+    The heading is the section label in effect (a label column beside the text), else the text
+    line just above the image."""
+    longest = max([len(segment.context), *map(len, segment.labels)], default=0)
+    limit = max(size - len(OCR_MARKER) - longest - 3, size // 2)
+    pieces = []
+    current = ""
+    for part in split_text(segment.text, limit, overlap):
+        found = [label for label in segment.labels if label in part]
+        if found:
+            current = found[-1]
+        heading = current or segment.context
+        pieces.append(OCR_MARKER + (f" · {heading}" if heading else "") + f"\n{part}")
+    return pieces
+
+
 def chunk_pages(pages: list[PageContent], source: str, size: int, overlap: int) -> list[Chunk]:
     chunks: list[Chunk] = []
     for page in pages:
         pieces: list[tuple[str, str]] = []
         for segment in page.reading_order():
             if segment.kind == "ocr":
-                # Every OCR chunk says where it comes from and which heading it sits under, so
-                # it can be found by that heading and is never mistaken for the text layer.
-                header = OCR_MARKER + (f" · {segment.context}" if segment.context else "")
-                parts = split_text(segment.text, max(size - len(header), size // 2), overlap)
-                pieces += [("ocr", f"{header}\n{part}") for part in parts]
+                pieces += [("ocr", text) for text in _ocr_pieces(segment, size, overlap)]
             else:
                 pieces += [("text", t) for t in split_text(segment.text, size, overlap)]
         for table in page.tables:

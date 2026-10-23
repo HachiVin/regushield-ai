@@ -25,11 +25,10 @@ three safeguards:
 - **Hybrid retrieval.** BM25 catches exact terms and article numbers ("Pasal 12", "POJK 51").
   Multilingual vector search catches paraphrases ("hadiah" vs "gratifikasi"). The two
   rankings are merged with Reciprocal Rank Fusion.
-- **Cross-encoder reranking, fused with the retrievers.** A multilingual reranker (FlashRank,
-  ONNX) rescores the merged candidates. The final order is Reciprocal Rank Fusion over three
-  rankings (BM25, vector, reranker), not the reranker score alone: on Indonesian text the
-  reranker gave almost every passage ~0.999, and sorting by it alone dropped a passage that BM25
-  ranked first ("tahun 2024 ... 1.043 pelanggaran").
+- **Cross-encoder reranking.** A multilingual reranker (FlashRank, ONNX) rereads the best
+  candidates, always including the top 3 of BM25 and of vector search, and its order is the
+  final order. Fusing its rank with the retrievers' instead (RRF) is a setting; the audits that
+  decided between the two are under trade-offs.
 - **OCR for text inside images.** Tables pasted as pictures and scanned pages are read with
   RapidOCR (ONNX, CPU, models bundled, no download). The text keeps its place on the page,
   each OCR passage carries the heading above the image, and it is labelled "OCR" in the
@@ -82,8 +81,7 @@ flowchart LR
         S --> RRF[Reciprocal Rank Fusion]
         V --> RRF
         RRF --> RR[Cross-encoder rerank]
-        RR --> Fuse[RRF of BM25,<br/>vector, rerank ranks]
-        Fuse --> Gate{question words in<br/>a passage, or similar?}
+        RR --> Gate{question words in<br/>a passage, or similar?}
         Gate -- no --> NF[Not found<br/>no LLM call]
         Gate -- yes --> Exp[Context expansion<br/>next chunk of cut-off hits]
         Exp --> LLM[Groq LLM<br/>streamed, cited]
@@ -103,7 +101,7 @@ flowchart LR
 | BM25 + vector search, merged with RRF | Legal text mixes exact identifiers with paraphrased concepts; each method misses what the other finds. RRF merges ranks without calibrating two score scales. | Two indexes to keep in sync. BM25 is rebuilt in memory from the vector store on start-up. |
 | Cross-encoder reranker on the top 10 fused candidates | Reads question and passage together, which is more accurate than comparing embeddings. | The slowest stage on CPU. Rescoring 20 candidates at 512 tokens was the bottleneck in local tests, so the default is 10 candidates at 256 tokens; the Monitoring page shows the effect. |
 | The top 3 of BM25 and of vector search always reach the reranker | Only 10 candidates are reranked (CPU cost). Picked by fused rank alone, a chunk that only one retriever finds, such as a table read by OCR that BM25 ranks first but the vector search does not list, lost to chunks both retrievers rank lower and was never reread. | Up to 6 of the 10 slots are reserved, so fewer chunks enter on fused rank alone. |
-| Final order = RRF(BM25, vector, reranker) | Audit of 53 retrieved passages: every reranker score was between 0.995 and 0.9996, so its order among good candidates was close to noise. In one case it pushed the passage BM25 ranked first out of the top 4 and the answer became "not found". With fusion a passage two rankings agree on stays on top. | The reranker can no longer overrule both retrievers. `REGUSHIELD_FUSE_RERANK=false` restores reranker-only ordering, e.g. for a stronger reranker. |
+| Final order = the reranker's, not RRF of all three rankings | Decided twice, with data. With 800-character chunks the reranker pushed the passage BM25 ranked first ("tahun 2024 ... 1.043") out of the top 4, so fusion became the default. After chunks shrank to 500 characters (inside its 256-token window), the retrieval trace of 10 audited questions showed the answer chunk in the reranker's top 5 nine times, against seven with fusion: fusion demoted the OCR sanctions table, which the reranker ranked 1st and 2nd but the vector search did not list. | Every reranker score is still ~0.999, so the relevance shown per source says little, and the gate does not use it. `REGUSHIELD_FUSE_RERANK=true` switches to fusion. |
 | Relevance gate by term coverage, not reranker score | The reranker gave an off-topic question ("suku bunga KPR") ~0.999 too, so a score threshold let everything through. Measured on the Bank Mandiri code of conduct: off-topic questions had 0.00–0.60 of their (rarity-weighted) words in one passage ("harga saham" matches the insider-trading text), and in a live audit an answerable question ("karyawan ... hadiah dari vendor", where the document says "gratifikasi") had only 0.18. | The ranges overlap, so no threshold separates them. A first default of 0.20 refused that answerable question, so the default is 0.10: it stops only questions that share almost nothing with the documents ("resep nasi goreng"); the rest go to the LLM, which refuses when the passages do not answer, at the cost of one LLM call. |
 | OCR with RapidOCR (ONNX), images upscaled 2× | In the test document the sanctions table, the violation counts and the gift rules were images: without OCR, about half of the content could not be answered. The model ships in the wheel and runs on CPU, so it stays free and offline. Reading the image's own pixels and upscaling them with a cubic filter removed most misread letters seen when rendering the page area. | Slower ingestion (about 40 s for the 9 images of the test document on the test machine's CPU). The recognizer is trained on Chinese/English text, so Indonesian words are sometimes merged ("kepadanasabah"); OCR passages are labelled so users can check them. Needs `libgl1` and `libglib2.0-0` on Linux (`packages.txt`, Dockerfile). |
 | ONNX models (FastEmbed, FlashRank), no PyTorch | Much smaller install and faster cold start on free hosting; CPU only. | Limited to the models these libraries ship. |
@@ -220,7 +218,7 @@ All settings are environment variables (or `.env`). Only `GROQ_API_KEY` is requi
 | `REGUSHIELD_EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Changing it builds a new index |
 | `REGUSHIELD_RERANKER_MODEL` | `ms-marco-MultiBERT-L-12` | `REGUSHIELD_RERANK=false` disables reranking |
 | `REGUSHIELD_RERANK_CANDIDATES` / `REGUSHIELD_RERANK_MAX_TOKENS` | `10` / `256` | Passages the reranker rescores, and tokens per pair: the main latency knobs on CPU |
-| `REGUSHIELD_FUSE_RERANK` | `true` | Final order from RRF of BM25, vector and reranker ranks |
+| `REGUSHIELD_FUSE_RERANK` | `false` | `true` = final order from RRF of BM25, vector and reranker ranks instead of the reranker's |
 | `REGUSHIELD_MIN_TERM_COVERAGE` / `REGUSHIELD_MIN_SIMILARITY` | `0.10` / `0.60` | Relevance gate: share of question words in the best passage, or vector similarity |
 | `REGUSHIELD_MIN_RELEVANCE` | `0.10` | Gate on the reranker score (rarely triggers, see trade-offs) |
 | `REGUSHIELD_TOP_K` / `REGUSHIELD_CANDIDATES` | `5` / `20` | Passages sent to the LLM / taken from each retriever |
@@ -285,9 +283,10 @@ Streamlit pages end to end.
   ("harga saham") still reaches the LLM, which then has to refuse. Words match with Indonesian
   affixes only ("lapor" ~ "melaporkan"); an early version matched any substring, so "enak"
   matched "dikenakan" and "resep nasi goreng yang enak" passed the gate.
-- In OCR text, a label column beside the body text (as on the code-of-conduct pages) is
-  joined into the body lines ("... Hari Raya Keagamaan Gratifikasi | dari nasabah ..."), which
-  can blur a sentence.
+- OCR layout is rebuilt with simple rules: a narrow label column beside body text is put on
+  its own line where its section starts (an earlier version joined it into sentences: "... Hari
+  Raya Keagamaan Gratifikasi | dari nasabah ..."), but with uneven sections a label can land a
+  few lines late.
 - Questions phrased with different words than the document ("wajib mematuhi" vs "berlaku
   untuk") depend on the vector model and can still miss.
 - Documents indexed with other settings (older versions, chunk size, OCR off) are listed on

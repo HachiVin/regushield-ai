@@ -115,28 +115,112 @@ def available() -> bool:
     return unavailable_reason() is None
 
 
+def section_labels(lines: list[OcrLine]) -> list[str]:
+    """The labels of the side column (section names), top to bottom; empty for other layouts."""
+    if not lines:
+        return []
+    line_height = median(line.height for line in lines) or 1.0
+    labels = _side_labels(lines)
+    rows = _rows([line for line in lines if line not in labels], line_height)
+    texts = [_join_row(row, line_height) for row in rows]
+    return [text for _index, text in _place_labels(labels, rows, texts, line_height)]
+
+
 def lines_to_text(lines: list[OcrLine]) -> str:
     """Rebuild reading order: lines whose boxes share a row are joined left to right, with
-    " | " between cells that are far apart (table columns), rows top to bottom."""
+    " | " between cells that are far apart (table columns), rows top to bottom.
+
+    A narrow label column beside body text (the code of conduct's "3 | Penyalahgunaan Jabatan
+    dan Gratifikasi" boxes) is kept out of the body rows. Joined into them, its words landed in
+    the middle of sentences ("... Hari Raya Keagamaan Gratifikasi | dari nasabah ..."). Each
+    label is put on its own line before the paragraph where its section starts.
+    """
     if not lines:
         return ""
     line_height = median(line.height for line in lines) or 1.0
+    labels = _side_labels(lines)
+    rows = _rows([line for line in lines if line not in labels], line_height)
+    texts = [_join_row(row, line_height) for row in rows]
+    before: dict[int, list[str]] = {}
+    for index, label in _place_labels(labels, rows, texts, line_height):
+        before.setdefault(index, []).append(label)
+    out = []
+    for index, text in enumerate(texts):
+        out += before.get(index, [])
+        out.append(text)
+    out += before.get(len(texts), [])
+    return "\n".join(out)
+
+
+def _rows(lines: list[OcrLine], line_height: float) -> list[list[OcrLine]]:
     rows: list[list[OcrLine]] = []
     for line in sorted(lines, key=lambda item: item.center_y):
         if rows and abs(line.center_y - _row_center(rows[-1])) <= line_height / 2:
             rows[-1].append(line)
         else:
             rows.append([line])
+    return rows
 
-    out = []
-    for row in rows:
-        row.sort(key=lambda item: item.x0)
-        text = row[0].text
-        for previous, line in zip(row, row[1:], strict=False):
-            gap = line.x0 - previous.x1
-            text += (" | " if gap > 2 * line_height else " ") + line.text
-        out.append(text)
-    return "\n".join(out)
+
+def _join_row(row: list[OcrLine], line_height: float) -> str:
+    row = sorted(row, key=lambda item: item.x0)
+    text = row[0].text
+    for previous, line in zip(row, row[1:], strict=False):
+        gap = line.x0 - previous.x1
+        text += (" | " if gap > 2 * line_height else " ") + line.text
+    return text
+
+
+def _side_labels(lines: list[OcrLine]) -> list[OcrLine]:
+    """Lines that sit entirely left of a column of long prose lines, when they are few.
+
+    Tables are left alone: their cells are short, so there is no prose column, or their first
+    column has a cell on most rows (more than 30% of the lines)."""
+    width = max(line.x1 for line in lines) - min(line.x0 for line in lines)
+    prose = [line for line in lines if line.x1 - line.x0 >= 0.5 * width]
+    if len(prose) < 0.3 * len(lines):
+        return []
+    body_left = min(line.x0 for line in prose)
+    labels = [line for line in lines if line.x1 < body_left]
+    return labels if 0 < len(labels) <= 0.3 * len(lines) else []
+
+
+def _place_labels(
+    labels: list[OcrLine], rows: list[list[OcrLine]], texts: list[str], line_height: float
+) -> list[tuple[int, str]]:
+    """For each group of nearby labels (one table cell), the body row it goes before: the top
+    of the image for the first group (sections start there), otherwise the last paragraph start
+    at or above the label's top. A label is centred in its cell, so its top is a little below
+    the first line of its section."""
+    groups: list[list[OcrLine]] = []
+    for line in sorted(labels, key=lambda item: item.y0):
+        if groups and line.y0 - max(item.y1 for item in groups[-1]) <= 3 * line_height:
+            groups[-1].append(line)
+        else:
+            groups.append([line])
+    starts = [0] + [
+        i for i in range(1, len(texts)) if texts[i - 1].rstrip().endswith((".", ":", ";", ")"))
+    ]
+    placed: list[tuple[int, str]] = []
+    last = -1
+    for number, group in enumerate(groups):
+        top = min(item.y0 for item in group) + line_height / 2
+        candidates = [i for i in starts if i > last and _row_center(rows[i]) <= top]
+        later = [i for i in starts if i > last]
+        if number == 0:
+            index = 0
+        else:
+            index = candidates[-1] if candidates else (later[0] if later else len(texts))
+        # The section number ("3") is its own column: put it first, then the name in order.
+        numbers = [item for item in group if item.text.strip().isdigit()]
+        names = [item for item in group if item not in numbers]
+        text = " ".join(
+            [item.text for item in sorted(numbers, key=lambda item: item.y0)]
+            + [_join_row(row, line_height) for row in _rows(names, line_height)]
+        )
+        placed.append((index, text))
+        last = index
+    return placed
 
 
 def _row_center(row: list[OcrLine]) -> float:

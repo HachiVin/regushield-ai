@@ -5,10 +5,11 @@ search finds paraphrases ("hadiah" vs "gratifikasi"). RRF combines the two ranki
 having to calibrate their very different score scales. A cross-encoder then rereads the best
 candidates together with the question.
 
-The final order is RRF over all three rankings (BM25, vector, reranker), not the reranker
-score alone. On Indonesian text the multilingual reranker gave almost every passage ~0.999, so
-sorting by its score alone was close to random and pushed a chunk ranked first by BM25 out of
-the results. With fusion, a passage that two of the three rankings put on top stays on top.
+The reranker's order is the final order. Its scores are all ~0.999 on Indonesian text, but
+their order is informative once chunks fit its 256-token window: in an audit of 10 questions
+it put the answer chunk in the top 5 nine times. RRF over all three rankings (fuse_rerank) got
+seven, because it demoted chunks only one retriever finds, such as OCR tables. To give those a
+chance at all, the top hits of each retriever always enter the reranker's pool.
 
 Context expansion: a hit that stops mid-sentence or mid-list ("...tiga kategori: Ringan,") is
 followed by the next chunk of the same document, because the rest of the list usually shares
@@ -162,7 +163,7 @@ class HybridRetriever:
         rerank_candidates: int = 10,
         context_window: int = 1,
         expand_top: int = 3,
-        fuse_rerank: bool = True,
+        fuse_rerank: bool = False,
     ) -> None:
         self.store = store
         self.reranker = reranker

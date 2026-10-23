@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
-from regushield.ocr import OcrEngine, lines_to_text
+from regushield.ocr import OcrEngine, lines_to_text, section_labels
 
 
 class PDFError(Exception):
@@ -30,6 +30,7 @@ class Segment:
     kind: str  # "text" or "ocr"
     text: str
     context: str = ""  # OCR only: the text line just before the image, usually its heading
+    labels: tuple[str, ...] = ()  # OCR only: section labels found beside the text, in order
 
 
 @dataclass
@@ -165,8 +166,9 @@ def _image_png(page: pymupdf.Page, image: _Image) -> bytes:
     return pixmap.tobytes("png")
 
 
-def _ocr_image(page: pymupdf.Page, image: _Image, ocr: OcrEngine) -> str:
-    return lines_to_text(ocr.read(_image_png(page, image)))
+def _ocr_image(page: pymupdf.Page, image: _Image, ocr: OcrEngine) -> tuple[str, tuple[str, ...]]:
+    lines = ocr.read(_image_png(page, image))
+    return lines_to_text(lines), tuple(section_labels(lines))
 
 
 def _last_sentence(text: str, limit: int = 100) -> str:
@@ -177,7 +179,7 @@ def _last_sentence(text: str, limit: int = 100) -> str:
     return sentence
 
 
-def _segments(items: list[tuple[float, int, str, str]]) -> list[Segment]:
+def _segments(items: list[tuple[float, int, str, object]]) -> list[Segment]:
     """Merge text blocks and OCR text by vertical position into reading-order segments."""
     segments: list[Segment] = []
     texts: list[str] = []
@@ -190,7 +192,8 @@ def _segments(items: list[tuple[float, int, str, str]]) -> list[Segment]:
             segments.append(Segment("text", "\n\n".join(texts)))
             context = _last_sentence(texts[-1])
             texts = []
-        segments.append(Segment("ocr", text, context))
+        ocr_text, labels = text  # type: ignore[misc]
+        segments.append(Segment("ocr", ocr_text, context, labels))
     if texts:
         segments.append(Segment("text", "\n\n".join(texts)))
     return segments
@@ -230,9 +233,9 @@ def read_pdf(
                 if image.digest in logos or budget <= 0:
                     continue
                 budget -= 1
-                text = _ocr_image(doc[index], image, ocr)  # type: ignore[arg-type]
+                text, labels = _ocr_image(doc[index], image, ocr)  # type: ignore[arg-type]
                 if text.strip():
-                    items.append((image.y0, 0, "ocr", text))
+                    items.append((image.y0, 0, "ocr", (text, labels)))
                     read += 1
             segments = _segments(items)
             page_text = "\n\n".join(s.text for s in segments if s.kind == "text")
