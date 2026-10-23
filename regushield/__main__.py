@@ -36,7 +36,8 @@ def main(argv: list[str] | None = None) -> int:
                 report = engine.ingest(path.name, path.read_bytes())
                 print(
                     f"{report.status:9s} {report.source}: {report.pages} pages, "
-                    f"{report.chunks} chunks ({report.tables} tables)"
+                    f"{report.chunks} chunks ({report.tables} tables, "
+                    f"{report.ocr_images} OCR images)"
                 )
             except (IngestError, OSError) as exc:
                 failed += 1

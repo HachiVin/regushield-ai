@@ -22,6 +22,7 @@ from regushield.config import Settings
 from regushield.llm import ChatModel, LLMError
 from regushield.models import Embedder, Reranker
 from regushield.monitoring import QueryLog, estimate_cost
+from regushield.ocr import OcrEngine
 from regushield.pdf import PDFError, read_pdf
 from regushield.prompts import NOT_FOUND, build_messages, cited_numbers, is_not_found
 from regushield.retrieval import HybridRetriever, RetrievalResult
@@ -41,6 +42,7 @@ class IngestReport:
     pages: int = 0
     chunks: int = 0
     tables: int = 0
+    ocr_images: int = 0
 
 
 @dataclass
@@ -72,6 +74,7 @@ class Answer:
     cost_usd: float | None = None
     model: str | None = None
     error: str | None = None
+    gate: dict[str, Any] = field(default_factory=dict)  # why the LLM was or was not called
 
     @property
     def cited(self) -> bool:
@@ -113,8 +116,17 @@ class AnswerStream:
         retrieval = engine.retriever.retrieve(answer.question, answer.scope)
         answer.latency_ms.update(retrieval.timings_ms)
         answer.sources = _sources(retrieval)
+        passed, reason = engine.relevance_gate(retrieval)
+        answer.gate = {
+            "passed": passed,
+            "reason": reason,
+            "term_coverage": _round(retrieval.term_coverage),
+            "matched_terms": retrieval.matched_terms,
+            "missing_terms": retrieval.missing_terms,
+            "top_similarity": _round(retrieval.top_similarity),
+        }
 
-        if not engine.passes_relevance_gate(retrieval):
+        if not passed:
             answer.status, answer.text = "not_found", NOT_FOUND
             yield NOT_FOUND
             return
@@ -155,6 +167,10 @@ class AnswerStream:
             answer.sources[number - 1].cited = True
 
 
+def _round(value: float | None) -> float | None:
+    return round(value, 4) if value is not None else None
+
+
 def _sources(retrieval: RetrievalResult) -> list[Source]:
     numbers = {h.chunk.id: n for n, h in enumerate(retrieval.hits, start=1)}
     return [
@@ -180,11 +196,13 @@ class RAGEngine:
         reranker: Reranker | None,
         chat: ChatModel | None,
         log: QueryLog,
+        ocr: OcrEngine | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.chat = chat
         self.log = log
+        self.ocr = ocr
         self.retriever = HybridRetriever(
             store,
             reranker,
@@ -192,6 +210,8 @@ class RAGEngine:
             settings.top_k,
             settings.rerank_candidates,
             settings.context_window,
+            settings.expand_top,
+            settings.fuse_rerank,
         )
         self._lock = threading.Lock()
 
@@ -202,7 +222,9 @@ class RAGEngine:
         embedder: Embedder | None = None,
         reranker: Reranker | None = None,
         chat: ChatModel | None = None,
+        ocr: OcrEngine | None = None,
     ) -> RAGEngine:
+        from regushield import ocr as ocr_module
         from regushield.llm import GroqChat
         from regushield.models import FastEmbedEmbedder, FlashRankReranker
 
@@ -212,8 +234,17 @@ class RAGEngine:
             reranker = FlashRankReranker(settings.reranker_model, cache, settings.rerank_max_tokens)
         if chat is None and settings.groq_api_key:
             chat = GroqChat(settings.groq_api_key, settings.llm_model, settings.reasoning_effort)
+        if ocr is None and settings.ocr_enabled and ocr_module.available():
+            ocr = ocr_module.RapidOcrEngine()
         store = VectorStore(settings.index_dir, embedder, settings.collection_name)
-        return cls(settings, store, reranker, chat, QueryLog(settings.log_path))
+        return cls(settings, store, reranker, chat, QueryLog(settings.log_path), ocr)
+
+    @property
+    def index_version(self) -> str:
+        """How documents are parsed and chunked now; a document indexed differently is
+        re-indexed when uploaded again."""
+        s = self.settings
+        return f"3|{s.chunk_size}|{s.chunk_overlap}|ocr={'on' if self.ocr else 'off'}"
 
     def warm_up(self) -> None:
         """Load the embedding and reranker models now, so the first question is not slow."""
@@ -231,17 +262,20 @@ class RAGEngine:
             raise IngestError(f"Ukuran file melebihi {self.settings.max_file_mb} MB.")
         sha256 = hashlib.sha256(data).hexdigest()
         existing = {d.source: d for d in self.documents()}
-        # Same file again: nothing to do, unless it was indexed before chunks stored their order.
-        if source in existing and existing[source].sha256 == sha256 and existing[source].ordered:
-            doc = existing[source]
-            return IngestReport(source, "unchanged", doc.pages, doc.chunks, doc.tables)
+        # Same file again: nothing to do, unless it was indexed with other settings.
+        doc = existing.get(source)
+        current = doc and doc.ordered and doc.index_version == self.index_version
+        if current and doc.sha256 == sha256:
+            return IngestReport(
+                source, "unchanged", doc.pages, doc.chunks, doc.tables, doc.ocr_chunks
+            )
         duplicate = next(
             (d for d in existing.values() if d.sha256 == sha256 and d.source != source), None
         )
         if duplicate is not None:
             raise IngestError(f"Isi file ini sudah terindeks sebagai '{duplicate.source}'.")
         try:
-            pages = read_pdf(data)
+            pages = read_pdf(data, self.ocr, self.settings.ocr_max_images)
         except PDFError as exc:
             raise IngestError(str(exc)) from exc
 
@@ -250,7 +284,7 @@ class RAGEngine:
         with self._lock:
             if source in existing:
                 self.store.delete_source(source)
-            self.store.add(chunks, sha256, now)
+            self.store.add(chunks, sha256, now, self.index_version)
             self.retriever.refresh()
             self.settings.raw_dir.mkdir(parents=True, exist_ok=True)
             (self.settings.raw_dir / source).write_bytes(data)
@@ -260,6 +294,7 @@ class RAGEngine:
             pages=len(pages),
             chunks=len(chunks),
             tables=sum(1 for c in chunks if c.kind == "table"),
+            ocr_images=sum(p.ocr_images for p in pages),
         )
 
     def delete(self, source: str) -> bool:
@@ -272,12 +307,31 @@ class RAGEngine:
         return True
 
     # --- questions --------------------------------------------------------------------
+    def relevance_gate(self, retrieval: RetrievalResult) -> tuple[bool, str]:
+        """Decide whether the retrieved chunks are worth sending to the LLM, and why.
+
+        The reranker score alone could not do this: on Indonesian text it gave off-topic
+        questions ("suku bunga KPR") ~0.999 too. So the best chunk must also contain enough of
+        the question's words, or be clearly similar in meaning. The gate is deliberately loose:
+        it saves the LLM call for clearly unrelated questions, and the LLM, told to answer only
+        from the passages, stays the judge for the rest.
+        """
+        if not retrieval.hits:
+            return False, "no_hits"
+        scores = [h.rerank_score for h in retrieval.hits if h.rerank_score is not None]
+        if scores and max(scores) < self.settings.min_relevance:
+            return False, "low_rerank"
+        coverage = retrieval.term_coverage
+        if coverage is None or coverage >= self.settings.min_term_coverage:
+            return True, "terms_matched"
+        similarity = retrieval.top_similarity
+        if similarity is not None and similarity >= self.settings.min_similarity:
+            return True, "similar"
+        return False, "off_topic"
+
     def passes_relevance_gate(self, retrieval: RetrievalResult) -> bool:
         """Skip the LLM when nothing relevant was found: cheaper, and no chance to invent."""
-        if not retrieval.hits:
-            return False
-        scores = [h.rerank_score for h in retrieval.hits if h.rerank_score is not None]
-        return not scores or max(scores) >= self.settings.min_relevance
+        return self.relevance_gate(retrieval)[0]
 
     def ask(self, question: str, scope: str | None = None) -> AnswerStream:
         return AnswerStream(self, question, scope)
@@ -308,6 +362,7 @@ class RAGEngine:
                 "top_relevance": round(max(top), 4) if top else None,
                 "n_sources": len(answer.sources),
                 "cited": answer.cited,
+                "gate": answer.gate,
                 "error": answer.error,
             }
         )

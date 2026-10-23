@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from regushield.ocr import OCR_MARKER
 from regushield.pdf import PageContent
 
 _SEPARATORS = ("\n\n", "\n", ". ", "; ", ", ", " ")
@@ -21,7 +22,7 @@ class Chunk:
     text: str
     source: str  # file name
     page: int  # 1-based
-    kind: str = "text"  # "text" or "table"
+    kind: str = "text"  # "text", "ocr" (text read from an image) or "table"
     seq: int = -1  # reading order within the document; -1 = unknown (indexed before v2.1)
 
 
@@ -104,7 +105,16 @@ def _chunk_id(source: str, page: int, kind: str, index: int, text: str) -> str:
 def chunk_pages(pages: list[PageContent], source: str, size: int, overlap: int) -> list[Chunk]:
     chunks: list[Chunk] = []
     for page in pages:
-        pieces = [("text", t) for t in split_text(page.text, size, overlap)]
+        pieces: list[tuple[str, str]] = []
+        for segment in page.reading_order():
+            if segment.kind == "ocr":
+                # Every OCR chunk says where it comes from and which heading it sits under, so
+                # it can be found by that heading and is never mistaken for the text layer.
+                header = OCR_MARKER + (f" · {segment.context}" if segment.context else "")
+                parts = split_text(segment.text, max(size - len(header), size // 2), overlap)
+                pieces += [("ocr", f"{header}\n{part}") for part in parts]
+            else:
+                pieces += [("text", t) for t in split_text(segment.text, size, overlap)]
         for table in page.tables:
             pieces += [("table", t) for t in split_table(table, size)]
         for index, (kind, text) in enumerate(pieces):

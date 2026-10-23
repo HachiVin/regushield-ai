@@ -23,5 +23,38 @@
       11
     ],
     "note": "Regresi: versi prompt sebelumnya menjawab 'tidak ditemukan' padahal kutipan halaman 10 memuat aturannya."
+  },
+  {
+    "question": "Berapa jumlah pelanggaran kode etik tahun 2024?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Selama tahun 2024 terjadi 1.043 pelanggaran kode etik.",
+    "expected_pages": [
+      12
+    ],
+    "note": "Regresi: dulu 'tidak ditemukan' karena reranker menurunkan chunk yang dipilih BM25 di peringkat 1."
+  },
+  {
+    "question": "Apa sanksi untuk pelanggaran kode etik kategori ringan?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Sanksi ringan berupa Teguran Tertulis Pertama dan Teguran Tertulis Kedua.",
+    "expected_pages": [
+      12
+    ],
+    "note": "Jawaban hanya ada di tabel berbentuk gambar: menguji OCR."
+  },
+  {
+    "question": "Bolehkah pegawai menerima bingkisan saat Hari Raya Keagamaan?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Tidak. Jajaran Bank dilarang menerima bingkisan dalam bentuk apa pun pada saat Hari Raya Keagamaan dari nasabah, rekanan, dan pihak lain yang menimbulkan potensi benturan kepentingan.",
+    "expected_pages": [
+      3
+    ],
+    "note": "Jawaban hanya ada di gambar halaman 3: menguji OCR."
+  },
+  {
+    "question": "Berapa suku bunga KPR Bank Mandiri?",
+    "document": "Semua Dokumen",
+    "ground_truth": "Informasi tersebut tidak ditemukan dalam dokumen yang tersedia.",
+    "note": "Di luar topik dokumen: jawaban yang benar adalah 'tidak ditemukan'."
   }
 ]

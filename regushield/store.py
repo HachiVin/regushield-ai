@@ -23,6 +23,8 @@ class DocumentInfo:
     sha256: str
     ingested_at: str
     ordered: bool = True  # every chunk knows its position (needed for context expansion)
+    index_version: str = ""  # how the document was parsed and chunked
+    ocr_chunks: int = 0
 
 
 def _chunk(id_: str, text: str, meta: dict) -> Chunk:
@@ -53,7 +55,9 @@ class VectorStore:
     def count(self) -> int:
         return self._collection.count()
 
-    def add(self, chunks: list[Chunk], sha256: str, ingested_at: str) -> None:
+    def add(
+        self, chunks: list[Chunk], sha256: str, ingested_at: str, index_version: str = ""
+    ) -> None:
         for start in range(0, len(chunks), _BATCH):
             batch = chunks[start : start + _BATCH]
             self._collection.add(
@@ -68,6 +72,7 @@ class VectorStore:
                         "seq": c.seq,
                         "sha256": sha256,
                         "ingested_at": ingested_at,
+                        "index_version": index_version,
                     }
                     for c in batch
                 ],
@@ -100,6 +105,8 @@ class VectorStore:
                     sha256=metas[0].get("sha256", ""),
                     ingested_at=metas[0].get("ingested_at", ""),
                     ordered=all("seq" in m for m in metas),
+                    index_version=metas[0].get("index_version", ""),
+                    ocr_chunks=sum(1 for m in metas if m.get("kind") == "ocr"),
                 )
                 for source, metas in grouped.items()
             ),

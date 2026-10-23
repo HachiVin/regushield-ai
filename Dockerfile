@@ -7,6 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     REGUSHIELD_MODEL_CACHE=/app/data/models
 
 WORKDIR /app
+# OpenCV (used by the OCR) needs these system libraries.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 

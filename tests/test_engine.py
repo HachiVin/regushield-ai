@@ -5,7 +5,14 @@ import pytest
 from regushield.engine import NO_LLM, IngestError, safe_pdf_name
 from regushield.llm import LLMError, Usage
 from regushield.prompts import NOT_FOUND, cited_numbers, is_not_found
-from tests.fakes import FakeChat, make_pdf
+from tests.fakes import (
+    FakeChat,
+    FakeOcr,
+    SaturatedReranker,
+    make_image_pdf,
+    make_pdf,
+    text_png,
+)
 
 
 # --- ingestion ------------------------------------------------------------------------------
@@ -233,3 +240,86 @@ def test_feedback_is_attached_to_the_query(engine):
     engine.feedback(answer.id, positive=False)
     engine.feedback(answer.id, positive=True)  # the latest vote wins
     assert engine.log.read()[0]["feedback"] is True
+
+
+# --- relevance gate ---------------------------------------------------------------------------
+def test_off_topic_question_is_stopped_even_when_the_reranker_scores_everything_high(
+    make_engine, kode_etik_pdf
+):
+    eng = make_engine(chat=FakeChat("tidak dipakai"), reranker=SaturatedReranker())
+    eng.ingest("kode etik.pdf", kode_etik_pdf)
+    answer = eng.ask_sync("Resep nasi goreng yang enak?")
+    assert answer.status == "not_found" and eng.chat.messages == []
+    assert answer.gate["passed"] is False and answer.gate["reason"] == "off_topic"
+    assert answer.gate["missing_terms"] == ["resep", "nasi", "goreng", "enak"]
+    assert eng.log.read()[0]["gate"]["reason"] == "off_topic"
+
+
+def test_on_topic_question_passes_the_gate_with_its_matched_terms(make_engine, kode_etik_pdf):
+    eng = make_engine(chat=FakeChat("Dilarang [1]."), reranker=SaturatedReranker())
+    eng.ingest("kode etik.pdf", kode_etik_pdf)
+    answer = eng.ask_sync("Bolehkah pegawai menerima gratifikasi dari nasabah?")
+    assert answer.status == "answered" and answer.gate["reason"] == "terms_matched"
+    assert {"pegawai", "gratifikasi", "nasabah"} <= set(answer.gate["matched_terms"])
+
+
+def test_a_close_paraphrase_without_shared_words_passes_on_similarity(
+    make_engine, kode_etik_pdf, settings
+):
+    class SameVector:
+        def embed_documents(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+        def embed_query(self, text):
+            return [1.0, 0.0]
+
+    import uuid
+
+    from regushield.engine import RAGEngine
+    from regushield.monitoring import QueryLog
+    from regushield.store import VectorStore
+
+    store = VectorStore(None, SameVector(), f"test-{uuid.uuid4().hex[:8]}")
+    eng = RAGEngine(
+        settings, store, SaturatedReranker(), FakeChat("Ya [1]."), QueryLog(settings.log_path)
+    )
+    eng.ingest("kode etik.pdf", kode_etik_pdf)
+    answer = eng.ask_sync("Resep nasi goreng yang enak?")
+    assert answer.gate["reason"] == "similar" and answer.status == "answered"
+
+
+# --- OCR ----------------------------------------------------------------------------------------
+SANKSI_IMAGE = [["Jenis Pelanggaran", "Sanksi"], ["Sanksi Ringan", "Teguran Tertulis Pertama"]]
+
+
+def ocr_engine(make_engine, settings, chat=None):
+    eng = make_engine(chat=chat or FakeChat("Teguran Tertulis Pertama [1]."))
+    eng.ocr = FakeOcr(SANKSI_IMAGE)
+    return eng
+
+
+def sanksi_pdf():
+    return make_image_pdf(
+        [[("text", "Jenis Sanksi Pelanggaran Kode Etik"), ("image", text_png("tabel sanksi"))]]
+    )
+
+
+def test_text_in_images_is_indexed_and_reaches_the_llm_labelled_as_ocr(make_engine, settings):
+    eng = ocr_engine(make_engine, settings)
+    report = eng.ingest("sanksi.pdf", sanksi_pdf())
+    assert report.ocr_images == 1 and eng.documents()[0].ocr_chunks == 1
+    answer = eng.ask_sync("Apa sanksi untuk pelanggaran ringan?")
+    ocr_sources = [s for s in answer.sources if s.kind == "ocr"]
+    assert ocr_sources and "Teguran Tertulis Pertama" in ocr_sources[0].text
+    user = eng.chat.messages[-1][1]["content"]
+    assert "(teks dari gambar (OCR), sanksi.pdf, halaman 1)" in user
+
+
+def test_turning_ocr_on_reindexes_a_document_uploaded_without_it(make_engine, settings):
+    eng = make_engine()
+    pdf = sanksi_pdf()
+    assert eng.ingest("sanksi.pdf", pdf).ocr_images == 0
+    eng.ocr = FakeOcr(SANKSI_IMAGE)
+    report = eng.ingest("sanksi.pdf", pdf)
+    assert report.status == "replaced" and report.ocr_images == 1
+    assert eng.ingest("sanksi.pdf", pdf).status == "unchanged"

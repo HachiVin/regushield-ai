@@ -11,7 +11,7 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from tests.fakes import make_pdf
+from tests.fakes import FakeOcr, make_image_pdf, make_pdf, text_png
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
 
@@ -141,3 +141,35 @@ def test_preceding_source_is_labelled(engine):
     app.chat_input[0].set_value("kotak surat lapor").run()
     assert not app.exception
     assert any("bagian sebelum [" in m for m in texts(app.markdown))
+
+
+def ingest_ocr_document(engine):
+    engine.ocr = FakeOcr([["Sanksi Ringan", "Teguran Tertulis Pertama"]])
+    engine.ingest(
+        "sanksi.pdf",
+        make_image_pdf([[("text", "Jenis Sanksi Pelanggaran"), ("image", text_png("tabel"))]]),
+    )
+
+
+def test_sources_read_from_images_are_flagged_as_ocr(engine):
+    ingest_ocr_document(engine)
+    app = run()
+    app.chat_input[0].set_value("Apa sanksi ringan teguran tertulis?").run()
+    assert not app.exception
+    assert any("OCR dari gambar" in m for m in texts(app.markdown))
+
+
+def test_documents_page_shows_ocr_status_and_ocr_chunks(engine):
+    ingest_ocr_document(engine)
+    app = run("views/documents.py")
+    assert not app.exception
+    assert any("OCR aktif" in c for c in texts(app.caption))
+    table = app.dataframe[0].value
+    assert int(table.set_index("Dokumen").loc["sanksi.pdf", "Potongan OCR"]) == 1
+
+
+def test_monitoring_shows_the_gate_rate(engine):
+    engine.ask_sync("Resep nasi goreng yang enak?")
+    app = run("views/monitoring.py")
+    metrics = {m.label: m.value for m in app.metric}
+    assert metrics["Ditolak gerbang"] == "100%"

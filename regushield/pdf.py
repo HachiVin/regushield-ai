@@ -1,101 +1,137 @@
-"""PDF -> per-page text and tables (PyMuPDF), with light cleaning of real-world PDFs.
+"""OCR for images inside PDFs (tables or text pasted as pictures, scanned pages).
 
-* Page numbers are 1-based, as printed on the page, so citations point to the right page.
-* Tables are detected with ``find_tables()`` and kept as Markdown, so rows and columns of a
-  sanctions table stay together instead of being flattened into a word soup.
-* Running headers/footers that repeat on most pages, and bare page numbers, are removed so
-  they do not pollute keyword search.
+RapidOCR runs PP-OCR models through ONNX Runtime on CPU, and its models ship inside the wheel,
+so there is nothing to download and nothing to pay for. Its default recognizer is trained on
+Chinese and English; Indonesian uses the same Latin letters, but words are sometimes merged
+("kepadanasabah"), which is why OCR text is marked as such wherever it is shown.
 """
 
 from __future__ import annotations
 
-import re
-from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from statistics import median
+from typing import Protocol
 
-import pymupdf
-
-
-class PDFError(Exception):
-    """The file cannot be read as a PDF, is encrypted, or has no extractable text."""
+OCR_MARKER = "[Teks dari gambar (OCR)]"
+UPSCALE_BELOW_PX = 1600
 
 
-@dataclass
-class PageContent:
-    number: int  # 1-based
+@dataclass(frozen=True)
+class OcrLine:
     text: str
-    tables: list[str] = field(default_factory=list)  # Markdown
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    score: float
+
+    @property
+    def height(self) -> float:
+        return self.y1 - self.y0
+
+    @property
+    def center_y(self) -> float:
+        return (self.y0 + self.y1) / 2
 
 
-_PAGE_NUMBER = re.compile(
-    r"^\s*(?:hal(?:aman)?\.?\s*)?-?\s*\d{1,4}\s*-?\s*(?:/\s*\d{1,4})?\s*$", re.I
-)
+class OcrEngine(Protocol):
+    def read(self, png: bytes) -> list[OcrLine]:
+        """Text lines found in a PNG image, with their boxes in image pixels."""
+        ...
 
 
-def _normalize_line(line: str) -> str:
-    return re.sub(r"\d+", "#", re.sub(r"\s+", " ", line.strip().lower()))
+class RapidOcrEngine:
+    """RapidOCR (ONNX). The angle classifier is off: rendered PDF images are never rotated,
+    and with it on, some lines came back upside down as gibberish."""
+
+    def __init__(self, min_score: float = 0.6) -> None:
+        self.min_score = min_score
+        self._engine = None
+
+    def _load(self):
+        if self._engine is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            self._engine = RapidOCR()
+        return self._engine
+
+    def read(self, png: bytes) -> list[OcrLine]:
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            return []
+        image = _to_bgr_on_white(image, np)
+        scale = 1.0
+        if image.shape[1] < UPSCALE_BELOW_PX:
+            # Small text: twice the size with a sharp (cubic) filter. In testing this recovered
+            # lines the detector skipped and fixed most misread letters ("Dilarong").
+            scale = 2.0
+            image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        result, _elapsed = self._load()(image, use_cls=False)
+        lines = []
+        for box, text, score in result or []:
+            xs = [float(p[0]) for p in box]
+            ys = [float(p[1]) for p in box]
+            if float(score) >= self.min_score and text.strip():
+                lines.append(
+                    OcrLine(text.strip(), min(xs), min(ys), max(xs), max(ys), float(score))
+                )
+        return lines
 
 
-def _clean_block(text: str) -> str:
-    """Join lines broken by the PDF layout inside a paragraph and collapse whitespace."""
-    lines = [line.strip() for line in text.splitlines()]
-    return re.sub(r"[ \t]+", " ", " ".join(line for line in lines if line)).strip()
+def _to_bgr_on_white(image, np):
+    """Grey or colour, with or without transparency -> 3-channel image on a white background
+    (transparent pixels would otherwise turn black and hide dark text)."""
+    import cv2
+
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.shape[2] == 4:
+        alpha = image[:, :, 3:4].astype(np.float32) / 255.0
+        rgb = image[:, :, :3].astype(np.float32)
+        return (rgb * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+    if image.shape[2] == 2:  # grey + alpha
+        alpha = image[:, :, 1:2].astype(np.float32) / 255.0
+        grey = image[:, :, 0:1].astype(np.float32)
+        return np.repeat(grey * alpha + 255.0 * (1.0 - alpha), 3, axis=2).astype(np.uint8)
+    return image
 
 
-def _page_blocks(page: pymupdf.Page) -> tuple[list[str], list[str]]:
-    tables, table_rects = [], []
+def available() -> bool:
+    """True when the OCR dependencies are installed."""
     try:
-        for table in page.find_tables().tables:
-            if table.row_count >= 2 and table.col_count >= 2:
-                tables.append(table.to_markdown().strip())
-                table_rects.append(pymupdf.Rect(table.bbox))
-    except Exception:  # table detection is best-effort; text extraction still works
-        tables, table_rects = [], []
-
-    blocks = []
-    for x0, y0, x1, y1, text, _no, block_type in page.get_text("blocks", sort=True):
-        if block_type != 0:  # images
-            continue
-        rect = pymupdf.Rect(x0, y0, x1, y1)
-        if any(rect.intersects(t) for t in table_rects):
-            continue  # already captured as a table
-        cleaned = _clean_block(text)
-        if cleaned:
-            blocks.append(cleaned)
-    return blocks, tables
+        import cv2  # noqa: F401
+        import rapidocr_onnxruntime  # noqa: F401
+    except Exception:  # ImportError, or OpenCV missing a system library such as libGL
+        return False
+    return True
 
 
-def _repeated_lines(pages_blocks: list[list[str]]) -> set[str]:
-    """Lines (digits ignored) that appear at the top/bottom of at least 60% of pages."""
-    if len(pages_blocks) < 3:
-        return set()
-    counts: Counter[str] = Counter()
-    for blocks in pages_blocks:
-        edges = {_normalize_line(b) for b in blocks[:2] + blocks[-2:]}
-        counts.update(edges)
-    threshold = 0.6 * len(pages_blocks)
-    return {line for line, n in counts.items() if n >= threshold and len(line) <= 120}
+def lines_to_text(lines: list[OcrLine]) -> str:
+    """Rebuild reading order: lines whose boxes share a row are joined left to right, with
+    " | " between cells that are far apart (table columns), rows top to bottom."""
+    if not lines:
+        return ""
+    line_height = median(line.height for line in lines) or 1.0
+    rows: list[list[OcrLine]] = []
+    for line in sorted(lines, key=lambda item: item.center_y):
+        if rows and abs(line.center_y - _row_center(rows[-1])) <= line_height / 2:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+
+    out = []
+    for row in rows:
+        row.sort(key=lambda item: item.x0)
+        text = row[0].text
+        for previous, line in zip(row, row[1:], strict=False):
+            gap = line.x0 - previous.x1
+            text += (" | " if gap > 2 * line_height else " ") + line.text
+        out.append(text)
+    return "\n".join(out)
 
 
-def read_pdf(data: bytes) -> list[PageContent]:
-    """Extract every page. Raises ``PDFError`` for unreadable or text-less files."""
-    try:
-        doc = pymupdf.open(stream=data, filetype="pdf")
-    except Exception as exc:
-        raise PDFError("File bukan PDF yang valid atau rusak.") from exc
-    with doc:
-        if doc.needs_pass:
-            raise PDFError("PDF terkunci dengan password.")
-        extracted = [_page_blocks(page) for page in doc]
-
-    repeated = _repeated_lines([blocks for blocks, _ in extracted])
-    pages = []
-    for number, (blocks, tables) in enumerate(extracted, start=1):
-        kept = [
-            b for b in blocks if _normalize_line(b) not in repeated and not _PAGE_NUMBER.match(b)
-        ]
-        pages.append(PageContent(number=number, text="\n\n".join(kept), tables=tables))
-
-    if not any(p.text or p.tables for p in pages):
-        raise PDFError("Tidak ada teks yang bisa dibaca (kemungkinan PDF hasil scan/gambar).")
-    return pages
+def _row_center(row: list[OcrLine]) -> float:
+    return sum(line.center_y for line in row) / len(row)

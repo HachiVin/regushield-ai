@@ -29,7 +29,7 @@ def ingest(engine, files) -> None:
                     "success",
                     f"**{report.source}**: {STATUS_TEXT[report.status]} — "
                     f"{report.pages} halaman, {report.chunks} potongan, "
-                    f"{report.tables} tabel.",
+                    f"{report.tables} tabel, {report.ocr_images} gambar dibaca dengan OCR.",
                 )
             )
         except IngestError as exc:
@@ -58,13 +58,23 @@ def main() -> None:
     )
     if st.button("Indeks dokumen", icon=":material/upload:", type="primary", disabled=not files):
         with st.spinner(
-            "Membaca dan mengindeks PDF (unduhan model pertama kali bisa beberapa menit)..."
+            "Membaca dan mengindeks PDF. Gambar berisi teks dibaca dengan OCR, jadi PDF dengan "
+            "banyak gambar bisa butuh beberapa menit..."
         ):
             ingest(engine, files)
-    st.caption(
-        f"Maksimal {engine.settings.max_file_mb} MB per file. PDF hasil scan (gambar) belum "
-        "didukung karena tidak ada OCR."
-    )
+    if engine.ocr is not None:
+        ocr_note = (
+            "OCR aktif: tabel atau teks berbentuk gambar dan PDF hasil scan ikut dibaca. Hasil "
+            "OCR ditandai di sumber jawaban karena bisa salah baca."
+        )
+    elif engine.settings.ocr_enabled:
+        ocr_note = (
+            "OCR tidak tersedia (paket rapidocr-onnxruntime belum terpasang), jadi teks di dalam "
+            "gambar tidak terbaca."
+        )
+    else:
+        ocr_note = "OCR dimatikan (REGUSHIELD_OCR=false): teks di dalam gambar tidak terbaca."
+    st.caption(f"Maksimal {engine.settings.max_file_mb} MB per file. {ocr_note}")
 
     st.divider()
     documents = engine.documents()
@@ -80,6 +90,7 @@ def main() -> None:
                     "Halaman": d.pages,
                     "Potongan": d.chunks,
                     "Tabel": d.tables,
+                    "Potongan OCR": d.ocr_chunks,
                     "Diindeks": d.ingested_at[:16].replace("T", " "),
                 }
                 for d in documents
@@ -88,11 +99,13 @@ def main() -> None:
         hide_index=True,
         width="stretch",
     )
-    legacy = [d.source for d in documents if not d.ordered]
+    legacy = [
+        d.source for d in documents if not d.ordered or d.index_version != engine.index_version
+    ]
     if legacy:
         st.info(
-            f"{', '.join(legacy)} diindeks dengan versi lama, jadi kutipan lanjutan (context "
-            "expansion) belum aktif. Unggah ulang file yang sama untuk mengindeks ulang.",
+            f"{', '.join(legacy)} diindeks dengan pengaturan lama (ukuran potongan, OCR, atau "
+            "urutan potongan). Unggah ulang file yang sama untuk mengindeks ulang.",
             icon=":material/update:",
         )
 

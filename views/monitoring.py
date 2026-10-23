@@ -25,11 +25,15 @@ def kpis(summary: dict) -> None:
         help="Pertanyaan yang dijawab 'tidak ditemukan' (gerbang relevansi atau LLM).",
     )
     row[1].metric(
+        "Ditolak gerbang",
+        common.percent(summary["gated_rate"]),
+        help="Pertanyaan di luar topik dokumen yang dijawab 'tidak ditemukan' tanpa memanggil LLM.",
+    )
+    row[2].metric(
         "Tanpa sitasi",
         common.percent(summary["uncited_rate"]),
         help="Jawaban yang tidak menyebut nomor kutipan: tanda jawaban perlu dicek.",
     )
-    row[2].metric("Error", common.percent(summary["error_rate"]))
     row[3].metric(
         "Feedback positif",
         common.percent(summary["positive_feedback_rate"]),
@@ -39,6 +43,7 @@ def kpis(summary: dict) -> None:
     row[0].metric("Rata-rata token", summary["avg_tokens"] or "-")
     row[1].metric("Estimasi biaya / pertanyaan", common.usd(summary["avg_cost_usd"]))
     row[2].metric("Estimasi total biaya", common.usd(summary["total_cost_usd"]))
+    row[3].metric("Error", common.percent(summary["error_rate"]))
 
 
 def main() -> None:

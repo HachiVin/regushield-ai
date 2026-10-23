@@ -85,6 +85,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "queries": total,
         "answered": len(answered),
         "not_found_rate": _rate(sum(r.get("status") == "not_found" for r in records), total),
+        # "not found" decided by the relevance gate, before (and instead of) an LLM call
+        "gated_rate": _rate(sum(r.get("gate", {}).get("passed") is False for r in records), total),
         "error_rate": _rate(total - len(ok), total),
         "uncited_rate": _rate(sum(not r.get("cited") for r in answered), len(answered)),
         "latency_p50_ms": percentile(latencies, 50),

@@ -280,3 +280,52 @@ def test_a_hit_that_starts_mid_list_gets_the_chunk_before_it():
 def test_a_numbered_section_at_the_top_of_a_page_is_not_expanded_backwards():
     retriever = HybridRetriever(store_with(WBS), None, 10, 4)
     assert [h.chunk.id for h in retriever.expand(as_hits(WBS[3:]))] == ["w3"]
+
+
+def test_rank_fusion_keeps_a_chunk_that_bm25_and_vector_put_first_when_the_reranker_does_not():
+    from tests.fakes import ReversedReranker
+
+    query = "jumlah pelanggaran kode etik tahun 2024"
+    texts = [
+        "Jumlah pelanggaran kode etik tahun 2024 adalah 1.043.",
+        "Kode etik berlaku untuk seluruh pegawai.",
+        "Pelanggaran dilaporkan melalui WBS.",
+        "Rapat direksi diadakan setiap bulan.",
+    ]
+    chunks = [chunk(i, t) for i, t in enumerate(texts)]
+    fused = HybridRetriever(store_with(chunks), ReversedReranker(), 10, 2)
+    assert fused.retrieve(query).hits[0].chunk.id == "c0"
+    rerank_only = HybridRetriever(store_with(chunks), ReversedReranker(), 10, 2, fuse_rerank=False)
+    assert "c0" not in [h.chunk.id for h in rerank_only.retrieve(query).hits]
+
+
+def test_rerank_score_is_kept_for_display_when_fused():
+    from tests.fakes import ReversedReranker
+
+    result = HybridRetriever(store_with(CHUNKS), ReversedReranker(), 10, 4).retrieve("sanksi berat")
+    assert all(h.rerank_score is not None for h in result.hits)
+    assert all(h.vector_score is not None for h in result.hits if h.vector_rank)
+
+
+def test_only_the_top_hits_get_context_expansion():
+    cut = ordered(["Kategori: Ringan,", "Sedang, Berat.", "Daftar: satu,", "dua, tiga."])
+    retriever = HybridRetriever(store_with(cut), None, 10, 4, expand_top=1)
+    hits = as_hits([cut[0], cut[2]])
+    assert [h.chunk.id for h in retriever.expand(hits)] == ["a.pdf-0", "a.pdf-1", "a.pdf-2"]
+
+
+def test_term_coverage_counts_rare_words_more_and_matches_inside_longer_words():
+    docs = [chunk(i, f"Bank Mandiri menetapkan aturan nomor {i}.") for i in range(6)]
+    docs.append(chunk(9, "Pegawai wajib melaporkan bingkisan hari raya kepada atasan."))
+    retriever = HybridRetriever(store_with(docs), None, 10, 7)
+    hits = as_hits(docs)
+    coverage, matched, missing = retriever.term_coverage("Bolehkah lapor bingkisan?", hits)
+    assert matched == ["lapor", "bingkisan"] and missing == ["bolehkah"]
+    off_topic, _, missing = retriever.term_coverage("Berapa suku bunga KPR Bank Mandiri?", hits)
+    assert missing == ["suku", "bunga", "kpr"]
+    assert off_topic < 0.2 < coverage  # "bank", "mandiri" are everywhere: they barely count
+
+
+def test_term_coverage_is_none_for_a_question_of_stopwords():
+    retriever = HybridRetriever(store_with(CHUNKS), None, 10, 4)
+    assert retriever.term_coverage("apa yang dan", as_hits(CHUNKS))[0] is None

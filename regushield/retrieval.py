@@ -3,7 +3,12 @@
 Why both: BM25 finds exact legal terms and article numbers ("Pasal 12", "POJK 51"), vector
 search finds paraphrases ("hadiah" vs "gratifikasi"). RRF combines the two rankings without
 having to calibrate their very different score scales. A cross-encoder then rereads the best
-candidates together with the question and gives each a comparable relevance score in [0, 1].
+candidates together with the question.
+
+The final order is RRF over all three rankings (BM25, vector, reranker), not the reranker
+score alone. On Indonesian text the multilingual reranker gave almost every passage ~0.999, so
+sorting by its score alone was close to random and pushed a chunk ranked first by BM25 out of
+the results. With fusion, a passage that two of the three rankings put on top stays on top.
 
 Context expansion: a hit that stops mid-sentence or mid-list ("...tiga kategori: Ringan,") is
 followed by the next chunk of the same document, because the rest of the list usually shares
@@ -13,8 +18,10 @@ middle of a numbered list ("2. E-mail ...") is preceded by the chunk holding the
 
 from __future__ import annotations
 
+import math
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 from rank_bm25 import BM25Okapi
@@ -73,6 +80,12 @@ class BM25Index:
         tokens = [tokenize(c.text) or ["_"] for c in chunks]
         self._terms = [set(t) for t in tokens]
         self._bm25 = BM25Okapi(tokens) if chunks else None
+        self._df: Counter[str] = Counter(term for terms in self._terms for term in terms)
+
+    def idf(self, term: str) -> float:
+        """How rare ``term`` is in the documents: high for rare or unseen words, low for words
+        that are everywhere ("bank" in a bank's code of conduct)."""
+        return math.log((len(self.chunks) + 1) / (self._df[term] + 0.5))
 
     def search(self, query: str, k: int, source: str | None = None) -> list[tuple[Chunk, float]]:
         terms = tokenize(query)
@@ -113,6 +126,7 @@ class Retrieved:
     bm25_rank: int | None
     vector_rank: int | None
     rerank_score: float | None = None
+    vector_score: float | None = None  # cosine similarity to the question
     continues: str | None = None  # id of the hit this chunk was added after (context expansion)
     precedes: str | None = None  # id of the hit this chunk was added before (context expansion)
 
@@ -126,6 +140,14 @@ class RetrievalResult:
     hits: list[Retrieved]
     candidates: int
     timings_ms: dict[str, float] = field(default_factory=dict)
+    term_coverage: float | None = None  # see HybridRetriever.term_coverage
+    matched_terms: list[str] = field(default_factory=list)
+    missing_terms: list[str] = field(default_factory=list)
+
+    @property
+    def top_similarity(self) -> float | None:
+        scores = [h.vector_score for h in self.hits if h.vector_score is not None]
+        return max(scores) if scores else None
 
 
 class HybridRetriever:
@@ -137,6 +159,8 @@ class HybridRetriever:
         top_k: int = 4,
         rerank_candidates: int = 10,
         context_window: int = 1,
+        expand_top: int = 3,
+        fuse_rerank: bool = True,
     ) -> None:
         self.store = store
         self.reranker = reranker
@@ -144,6 +168,8 @@ class HybridRetriever:
         self.top_k = top_k
         self.rerank_candidates = rerank_candidates
         self.context_window = context_window
+        self.expand_top = expand_top
+        self.fuse_rerank = fuse_rerank
         self.refresh()
 
     def refresh(self) -> None:
@@ -152,7 +178,8 @@ class HybridRetriever:
         self.bm25 = BM25Index(chunks)
         # Text chunks of each document in reading order, for context expansion.
         self._reading_order: dict[str, list[Chunk]] = {}
-        for c in sorted((c for c in chunks if c.kind == "text" and c.seq >= 0), key=_order):
+        prose = (c for c in chunks if c.kind in ("text", "ocr") and c.seq >= 0)
+        for c in sorted(prose, key=_order):
             self._reading_order.setdefault(c.source, []).append(c)
         self._position = {
             c.id: i for ordered in self._reading_order.values() for i, c in enumerate(ordered)
@@ -179,13 +206,14 @@ class HybridRetriever:
 
     def expand(self, hits: list[Retrieved]) -> list[Retrieved]:
         """Add the chunk before a hit that starts mid-list and the chunk after a hit that stops
-        mid-sentence, next to that hit (each chunk at most once)."""
+        mid-sentence, next to that hit (each chunk at most once). Only the ``expand_top`` best
+        hits are expanded: in testing, extra context for lower hits was almost never cited."""
         if self.context_window <= 0:
             return hits
         taken = {hit.chunk.id for hit in hits}
         out: list[Retrieved] = []
-        for hit in hits:
-            if hit.chunk.kind != "text":
+        for rank, hit in enumerate(hits):
+            if hit.chunk.kind != "text" or rank >= self.expand_top:
                 out.append(hit)
                 continue
             before = self.preceding(hit.chunk) if starts_mid_list(hit.chunk.text) else None
@@ -200,7 +228,7 @@ class HybridRetriever:
                     break
                 taken.add(chunk.id)
                 out.append(Retrieved(chunk, 0.0, None, None, continues=hit.chunk.id))
-                if not is_open_ended(chunk.text):
+                if chunk.kind != "text" or not is_open_ended(chunk.text):
                     break
         return out
 
@@ -219,9 +247,16 @@ class HybridRetriever:
         by_id = {c.id: c for c, _ in sparse + dense}
         bm25_rank = {c.id: r for r, (c, _) in enumerate(sparse, start=1)}
         vector_rank = {c.id: r for r, (c, _) in enumerate(dense, start=1)}
+        similarity = {c.id: score for c, score in dense}
         fused = reciprocal_rank_fusion([list(bm25_rank), list(vector_rank)])
         pool = [
-            Retrieved(by_id[i], score, bm25_rank.get(i), vector_rank.get(i))
+            Retrieved(
+                by_id[i],
+                score,
+                bm25_rank.get(i),
+                vector_rank.get(i),
+                vector_score=similarity.get(i),
+            )
             for i, score in sorted(fused.items(), key=lambda item: item[1], reverse=True)
         ][: self.candidates]
 
@@ -234,7 +269,54 @@ class HybridRetriever:
             timings["rerank"] = (time.perf_counter() - started) * 1000
             for hit, score in zip(pool, scores, strict=True):
                 hit.rerank_score = score
-            pool.sort(key=lambda hit: hit.rerank_score or 0.0, reverse=True)
+            by_rerank = sorted(pool, key=lambda hit: hit.rerank_score or 0.0, reverse=True)
+            if self.fuse_rerank:
+                rankings = [
+                    list(bm25_rank),
+                    list(vector_rank),
+                    [hit.chunk.id for hit in by_rerank],
+                ]
+                final = reciprocal_rank_fusion(rankings)
+                for hit in pool:
+                    hit.fusion_score = final[hit.chunk.id]
+                pool.sort(key=lambda hit: hit.fusion_score, reverse=True)
+            else:
+                pool = by_rerank
 
         hits = self.expand(pool[: self.top_k])
-        return RetrievalResult(hits=hits, candidates=len(fused), timings_ms=timings)
+        coverage, matched, missing = self.term_coverage(query, hits)
+        return RetrievalResult(
+            hits=hits,
+            candidates=len(fused),
+            timings_ms=timings,
+            term_coverage=coverage,
+            matched_terms=matched,
+            missing_terms=missing,
+        )
+
+    def term_coverage(
+        self, query: str, hits: list[Retrieved]
+    ) -> tuple[float | None, list[str], list[str]]:
+        """Share of the question's words (weighted by rarity) found together in one retrieved
+        chunk, the best chunk counting. A word also matches inside a longer one ("lapor" in
+        "melaporkan"). Returns (coverage, matched words, missing words); coverage is None for a
+        question made only of stopwords.
+        """
+        terms = list(dict.fromkeys(tokenize(query)))
+        if not terms or not hits:
+            return (None if not terms else 0.0), [], terms
+        total = sum(self.bm25.idf(t) for t in terms)
+        best: set[str] = set()
+        best_score = -1.0
+        for hit in hits:
+            words = set(tokenize(hit.chunk.text))
+            found = {t for t in terms if _contains(words, t)}
+            score = sum(self.bm25.idf(t) for t in found)
+            if score > best_score:
+                best, best_score = found, score
+        coverage = best_score / total if total else 0.0
+        return coverage, [t for t in terms if t in best], [t for t in terms if t not in best]
+
+
+def _contains(words: set[str], term: str) -> bool:
+    return term in words or (len(term) >= 4 and any(term in word for word in words))

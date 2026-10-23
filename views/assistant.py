@@ -25,6 +25,8 @@ def render_sources(answer: Answer) -> None:
                 tags = [f"**[{s.number}]** {s.source}", f"halaman {s.page}"]
                 if s.kind == "table":
                     tags.append("tabel")
+                elif s.kind == "ocr":
+                    tags.append(":orange-badge[OCR dari gambar]")
                 if s.continues is not None:
                     tags.append(f"lanjutan dari [{s.continues}]")
                 elif s.precedes is not None:

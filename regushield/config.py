@@ -35,12 +35,25 @@ class Settings:
     rerank_enabled: bool = True
     rerank_candidates: int = 10  # fused candidates the cross-encoder rescores (latency!)
     rerank_max_tokens: int = 256  # tokens per question+passage pair for the reranker
-    chunk_size: int = 800  # characters
-    chunk_overlap: int = 120
+    # ~500 characters fit in the embedding model's 128-token window, so the vector of a chunk
+    # describes all of it (with 800, the end of a chunk was invisible to vector search).
+    chunk_size: int = 500  # characters
+    chunk_overlap: int = 80
     candidates: int = 20  # taken from each retriever (BM25 and vector) before fusion
-    top_k: int = 4  # chunks sent to the LLM
+    top_k: int = 5  # chunks sent to the LLM
+    fuse_rerank: bool = True  # final order = RRF(BM25, vector, reranker); False = reranker only
     context_window: int = 1  # chunks added after a hit that stops mid-sentence (0 = off)
+    expand_top: int = 3  # only the best N hits get context expansion
     min_relevance: float = 0.10  # rerank score below this for every chunk -> "not found"
+    # Relevance gate (see RAGEngine.relevance_gate): the LLM is skipped when the best chunk holds
+    # less than this share of the question's words (weighted by rarity) and no chunk is
+    # min_similarity close in meaning. Measured on the Bank Mandiri code of conduct: answerable
+    # questions scored 0.27-1.00, off-topic ones 0.00-0.60, so 0.20 only stops the clearly
+    # unrelated ones and leaves the rest to the LLM, which refuses when the answer is missing.
+    min_term_coverage: float = 0.20
+    min_similarity: float = 0.60
+    ocr_enabled: bool = True  # read text inside images (needs rapidocr-onnxruntime)
+    ocr_max_images: int = 50  # per document; OCR is the slowest part of ingestion
     max_file_mb: int = 25
     api_key: str | None = None  # protects the REST API when set
     price_input_per_m: float | None = None
@@ -109,6 +122,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         rerank_enabled=_bool(env, "REGUSHIELD_RERANK", d.rerank_enabled),
         rerank_candidates=_int(env, "REGUSHIELD_RERANK_CANDIDATES", d.rerank_candidates),
         rerank_max_tokens=_int(env, "REGUSHIELD_RERANK_MAX_TOKENS", d.rerank_max_tokens),
+        fuse_rerank=_bool(env, "REGUSHIELD_FUSE_RERANK", d.fuse_rerank),
+        expand_top=_int(env, "REGUSHIELD_EXPAND_TOP", d.expand_top),
+        min_term_coverage=_float(env, "REGUSHIELD_MIN_TERM_COVERAGE", d.min_term_coverage) or 0.0,
+        min_similarity=_float(env, "REGUSHIELD_MIN_SIMILARITY", d.min_similarity) or 0.0,
+        ocr_enabled=_bool(env, "REGUSHIELD_OCR", d.ocr_enabled),
+        ocr_max_images=_int(env, "REGUSHIELD_OCR_MAX_IMAGES", d.ocr_max_images),
         chunk_size=_int(env, "REGUSHIELD_CHUNK_SIZE", d.chunk_size),
         chunk_overlap=_int(env, "REGUSHIELD_CHUNK_OVERLAP", d.chunk_overlap),
         candidates=_int(env, "REGUSHIELD_CANDIDATES", d.candidates),

@@ -225,3 +225,33 @@ def test_groq_connection_problems_become_readable_messages():
 
         with pytest.raises(LLMError, match=message):
             list(groq_chat(create).stream([{"role": "user", "content": "x"}]))
+
+
+def test_gated_questions_are_counted_separately():
+    records = [
+        record(),
+        record(status="not_found", gate={"passed": False, "reason": "off_topic"}),
+        record(status="not_found", gate={"passed": True, "reason": "terms_matched"}),
+        record(),  # logged before the gate was recorded
+    ]
+    s = summarize(records)
+    assert s["not_found_rate"] == 0.5 and s["gated_rate"] == 0.25
+
+
+def test_retrieval_and_ocr_settings_from_the_environment():
+    defaults = load_settings({})
+    assert (defaults.chunk_size, defaults.chunk_overlap, defaults.top_k) == (500, 80, 5)
+    assert defaults.fuse_rerank and defaults.ocr_enabled and defaults.expand_top == 3
+    s = load_settings(
+        {
+            "REGUSHIELD_FUSE_RERANK": "false",
+            "REGUSHIELD_EXPAND_TOP": "1",
+            "REGUSHIELD_MIN_TERM_COVERAGE": "0.3",
+            "REGUSHIELD_MIN_SIMILARITY": "0.7",
+            "REGUSHIELD_OCR": "off",
+            "REGUSHIELD_OCR_MAX_IMAGES": "5",
+        }
+    )
+    assert not s.fuse_rerank and s.expand_top == 1
+    assert s.min_term_coverage == 0.3 and s.min_similarity == 0.7
+    assert not s.ocr_enabled and s.ocr_max_images == 5

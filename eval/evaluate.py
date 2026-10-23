@@ -129,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                 "pages": [s.page for s in answer.sources],
                 "page_hit": bool(expected & {s.page for s in answer.sources}) if expected else None,
                 "cited": answer.cited,
+                "gate": answer.gate,
                 "latency_ms": round(answer.latency_ms.get("total", 0.0), 1),
                 "tokens": answer.prompt_tokens + answer.completion_tokens,
                 "cost_usd": answer.cost_usd,
@@ -159,9 +160,15 @@ def main(argv: list[str] | None = None) -> int:
         "embedding_model": settings.embedding_model,
         "reranker_model": settings.reranker_model if settings.rerank_enabled else None,
         "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
         "top_k": settings.top_k,
+        "fuse_rerank": settings.fuse_rerank,
         "context_window": settings.context_window,
+        "expand_top": settings.expand_top,
         "min_relevance": settings.min_relevance,
+        "min_term_coverage": settings.min_term_coverage,
+        "min_similarity": settings.min_similarity,
+        "ocr": engine.ocr is not None,
         "documents": [d.source for d in engine.documents()],
     }
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
