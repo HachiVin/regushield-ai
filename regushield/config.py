@@ -33,7 +33,11 @@ class Settings:
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     reranker_model: str = "ms-marco-MultiBERT-L-12"  # multilingual cross-encoder (FlashRank)
     rerank_enabled: bool = True
-    rerank_candidates: int = 10  # fused candidates the cross-encoder rescores (latency!)
+    # Candidates the cross-encoder rescores (its cost grows with this): the top 5 of BM25 and of
+    # vector search, then the best fused ones. 12, not 10: the OCR sanctions table was BM25's
+    # 5th for "sanksi kategori ringan" and missing from the vector top 20, so it was never reread
+    # with only the top 3 guaranteed; when it was reread, the reranker put it 1st or 2nd.
+    rerank_candidates: int = 12
     rerank_max_tokens: int = 256  # tokens per question+passage pair for the reranker
     # ~500 characters fit in the embedding model's 128-token window, so the vector of a chunk
     # describes all of it (with 800, the end of a chunk was invisible to vector search).

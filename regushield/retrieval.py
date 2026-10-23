@@ -160,7 +160,7 @@ class HybridRetriever:
         reranker: Reranker | None,
         candidates: int = 20,
         top_k: int = 4,
-        rerank_candidates: int = 10,
+        rerank_candidates: int = 12,
         context_window: int = 1,
         expand_top: int = 3,
         fuse_rerank: bool = False,
@@ -265,7 +265,7 @@ class HybridRetriever:
 
         if self.reranker is not None and pool:
             # The cross-encoder is the slowest stage on CPU, so it only rereads the best fused
-            # candidates. The top hits of each retriever always get in: a chunk only one of them
+            # candidates. The top 5 of each retriever always get in: a chunk only one of them
             # finds (a table pasted as an image: BM25 matches its words, the vector does not)
             # would otherwise lose to chunks both list lower, and never be reread at all.
             pool = _rerank_pool(pool, list(bm25_rank), list(vector_rank), self.rerank_candidates)
@@ -338,7 +338,7 @@ def _affixed(term: str) -> re.Pattern[str]:
 
 
 def _rerank_pool(
-    pool: list[Retrieved], bm25_ids: list[str], vector_ids: list[str], size: int, each: int = 3
+    pool: list[Retrieved], bm25_ids: list[str], vector_ids: list[str], size: int, each: int = 5
 ) -> list[Retrieved]:
     """The ``size`` candidates the reranker reads: the top ``each`` of BM25 and of the vector
     search first, then the rest in fused order."""
